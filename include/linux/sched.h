@@ -938,6 +938,7 @@ struct pipe_inode_info;
 struct uts_namespace;
 
 struct load_weight {
+	/* inv_weight is u32 upstream, unsigned long in RHEL7 because kABI */
 	unsigned long weight, inv_weight;
 };
 
