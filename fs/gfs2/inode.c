@@ -558,7 +558,7 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	struct gfs2_sbd *sdp = GFS2_SB(&dip->i_inode);
 	struct gfs2_glock *io_gl;
 	struct dentry *d;
-	int error;
+	int error, free_vfs_inode = 0;
 	u32 aflags = 0;
 	int arq;
 
@@ -716,14 +716,15 @@ fail_free_inode:
 	if (ip->i_gl)
 		gfs2_glock_put(ip->i_gl);
 	gfs2_rs_delete(ip);
-	free_inode_nonrcu(inode);
-	inode = NULL;
+	free_vfs_inode = 1;
 fail_gunlock:
 	gfs2_glock_dq_uninit(ghs);
 	if (inode && !IS_ERR(inode)) {
 		clear_nlink(inode);
-		mark_inode_dirty(inode);
-		set_bit(GIF_ALLOC_FAILED, &GFS2_I(inode)->i_flags);
+		if (!free_vfs_inode)
+			mark_inode_dirty(inode);
+		set_bit(free_vfs_inode ? GIF_FREE_VFS_INODE : GIF_ALLOC_FAILED,
+			&GFS2_I(inode)->i_flags);
 		iput(inode);
 	}
 fail:

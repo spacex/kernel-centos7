@@ -2442,8 +2442,8 @@ extern int             skb_splice_bits(struct sk_buff *skb,
 						unsigned int flags);
 extern void	       skb_copy_and_csum_dev(const struct sk_buff *skb, u8 *to);
 unsigned int skb_zerocopy_headlen(const struct sk_buff *from);
-void skb_zerocopy(struct sk_buff *to, const struct sk_buff *from,
-                 int len, int hlen);
+int skb_zerocopy(struct sk_buff *to, struct sk_buff *from,
+		 int len, int hlen);
 
 extern void	       skb_split(struct sk_buff *skb,
 				 struct sk_buff *skb1, const u32 len);

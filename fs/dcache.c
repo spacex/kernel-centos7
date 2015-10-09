@@ -2683,9 +2683,9 @@ static int prepend_name(char **buffer, int *buflen, struct qstr *name)
 	u32 dlen = ACCESS_ONCE(name->len);
 	char *p;
 
-	if (*buflen < dlen + 1)
-		return -ENAMETOOLONG;
 	*buflen -= dlen + 1;
+	if (*buflen < 0)
+		return -ENAMETOOLONG;
 	p = *buffer -= dlen + 1;
 	*p++ = '/';
 	while (dlen--) {
@@ -2718,9 +2718,9 @@ static int prepend_path(const struct path *path,
 			const struct path *root,
 			char **buffer, int *buflen)
 {
-	struct dentry *dentry = path->dentry;
-	struct vfsmount *vfsmnt = path->mnt;
-	struct mount *mnt = real_mount(vfsmnt);
+	struct dentry *dentry;
+	struct vfsmount *vfsmnt;
+	struct mount *mnt;
 	int error = 0;
 	unsigned seq = 0;
 	char *bptr;
@@ -2730,6 +2730,10 @@ static int prepend_path(const struct path *path,
 restart:
 	bptr = *buffer;
 	blen = *buflen;
+	error = 0;
+	dentry = path->dentry;
+	vfsmnt = path->mnt;
+	mnt = real_mount(vfsmnt);
 	read_seqbegin_or_lock(&rename_lock, &seq);
 	while (dentry != root->dentry || vfsmnt != root->mnt) {
 		struct dentry * parent;
@@ -2938,19 +2942,22 @@ char *simple_dname(struct dentry *dentry, char *buffer, int buflen)
 /*
  * Write full pathname from the root of the filesystem into the buffer.
  */
-static char *__dentry_path(struct dentry *dentry, char *buf, int buflen)
+static char *__dentry_path(struct dentry *d, char *buf, int buflen)
 {
+	struct dentry *dentry;
 	char *end, *retval;
 	int len, seq = 0;
 	int error = 0;
 
+	if (buflen < 2)
+		goto Elong;
+
 	rcu_read_lock();
 restart:
+	dentry = d;
 	end = buf + buflen;
 	len = buflen;
 	prepend(&end, &len, "\0", 1);
-	if (buflen < 1)
-		goto Elong;
 	/* Get '/' right */
 	retval = end-1;
 	*retval = '/';
