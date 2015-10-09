@@ -35,7 +35,7 @@
 #include "cq_enet_desc.h"
 #include "cq_exch_desc.h"
 
-static u8 fcoe_all_fcfs[ETH_ALEN];
+static u8 fcoe_all_fcfs[ETH_ALEN] =  FIP_ALL_FCF_MACS;
 struct workqueue_struct *fnic_fip_queue;
 struct workqueue_struct *fnic_event_queue;
 

@@ -131,7 +131,7 @@ scmd_eh_abort_handler(struct work_struct *work)
 				    "aborting command %p\n", scmd));
 		rtn = scsi_try_to_abort_cmd(sdev->host->hostt, scmd);
 		if (rtn == SUCCESS) {
-			scmd->result |= DID_TIME_OUT << 16;
+			set_host_byte(scmd, DID_TIME_OUT);
 			if (scsi_host_eh_past_deadline(sdev->host)) {
 				SCSI_LOG_ERROR_RECOVERY(3,
 					scmd_printk(KERN_INFO, scmd,
@@ -167,7 +167,7 @@ scmd_eh_abort_handler(struct work_struct *work)
 			scmd_printk(KERN_WARNING, scmd,
 				    "scmd %p terminate "
 				    "aborted command\n", scmd));
-		scmd->result |= DID_TIME_OUT << 16;
+		set_host_byte(scmd, DID_TIME_OUT);
 		scsi_finish_command(scmd);
 	}
 }
@@ -189,6 +189,7 @@ scsi_abort_command(struct scsi_cmnd *scmd)
 		/*
 		 * Retry after abort failed, escalate to next level.
 		 */
+		scmd->eh_eflags &= ~SCSI_EH_ABORT_SCHEDULED;
 		SCSI_LOG_ERROR_RECOVERY(3,
 			scmd_printk(KERN_INFO, scmd,
 				    "scmd %p previous abort failed\n", scmd));
@@ -286,15 +287,15 @@ enum blk_eh_timer_return scsi_times_out(struct request *req)
 	else if (host->hostt->eh_timed_out)
 		rtn = host->hostt->eh_timed_out(scmd);
 
-	if (rtn == BLK_EH_NOT_HANDLED && !host->hostt->no_async_abort)
-		if (scsi_abort_command(scmd) == SUCCESS)
+	if (rtn == BLK_EH_NOT_HANDLED) {
+		if (!host->hostt->no_async_abort &&
+		    scsi_abort_command(scmd) == SUCCESS)
 			return BLK_EH_NOT_HANDLED;
 
-	scmd->result |= DID_TIME_OUT << 16;
-
-	if (unlikely(rtn == BLK_EH_NOT_HANDLED &&
-		     !scsi_eh_scmd_add(scmd, SCSI_EH_CANCEL_CMD)))
-		rtn = BLK_EH_HANDLED;
+		set_host_byte(scmd, DID_TIME_OUT);
+		if (!scsi_eh_scmd_add(scmd, SCSI_EH_CANCEL_CMD))
+			rtn = BLK_EH_HANDLED;
+	}
 
 	return rtn;
 }
@@ -920,10 +921,12 @@ void scsi_eh_prep_cmnd(struct scsi_cmnd *scmd, struct scsi_eh_save *ses,
 	ses->prot_op = scmd->prot_op;
 
 	scmd->prot_op = SCSI_PROT_NORMAL;
+	scmd->eh_eflags = 0;
 	scmd->cmnd = ses->eh_cmnd;
 	memset(scmd->cmnd, 0, BLK_MAX_CDB);
 	memset(&scmd->sdb, 0, sizeof(scmd->sdb));
 	scmd->request->next_rq = NULL;
+	scmd->result = 0;
 
 	if (sense_bytes) {
 		scmd->sdb.length = min_t(unsigned, SCSI_SENSE_BUFFERSIZE,
@@ -1157,6 +1160,15 @@ int scsi_eh_get_sense(struct list_head *work_q,
 					     __func__));
 			break;
 		}
+		if (status_byte(scmd->result) != CHECK_CONDITION)
+			/*
+			 * don't request sense if there's no check condition
+			 * status because the error we're processing isn't one
+			 * that has a sense code (and some devices get
+			 * confused by sense requests out of the blue)
+			 */
+			continue;
+
 		SCSI_LOG_ERROR_RECOVERY(2, scmd_printk(KERN_INFO, scmd,
 						  "%s: requesting sense\n",
 						  current->comm));
@@ -1764,7 +1776,7 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 		break;
 	case DID_ABORT:
 		if (scmd->eh_eflags & SCSI_EH_ABORT_SCHEDULED) {
-			scmd->result |= DID_TIME_OUT << 16;
+			set_host_byte(scmd, DID_TIME_OUT);
 			return SUCCESS;
 		}
 	case DID_NO_CONNECT:
