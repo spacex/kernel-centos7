@@ -38,6 +38,7 @@
 #define AP_POLL_TIME 1		/* Time in ticks between receive polls. */
 
 extern int ap_domain_index;
+extern int ap_hwrng_seed;
 
 /**
  * The ap_qid_t identifier of an ap queue. It contains a

@@ -1374,6 +1374,7 @@ static int zcrypt_rng_data_read(struct hwrng *rng, u32 *data)
 static struct hwrng zcrypt_rng_dev = {
 	.name		= "zcrypt",
 	.data_read	= zcrypt_rng_data_read,
+	.quality	= 990,
 };
 
 static int zcrypt_rng_device_add(void)
@@ -1388,6 +1389,8 @@ static int zcrypt_rng_device_add(void)
 			goto out;
 		}
 		zcrypt_rng_buffer_index = 0;
+		if (!ap_hwrng_seed)
+			zcrypt_rng_dev.quality = 0;
 		rc = hwrng_register(&zcrypt_rng_dev);
 		if (rc)
 			goto out_free;

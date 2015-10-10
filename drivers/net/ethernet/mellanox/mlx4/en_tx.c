@@ -793,6 +793,7 @@ netdev_tx_t mlx4_en_xmit(struct sk_buff *skb, struct net_device *dev)
 	 * For timestamping add flag to skb_shinfo and
 	 * set flag for further reference
 	 */
+	tx_info->ts_requested = 0;
 	if (ring->hwtstamp_tx_type == HWTSTAMP_TX_ON &&
 	    skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
 		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;

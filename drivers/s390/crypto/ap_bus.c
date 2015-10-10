@@ -85,6 +85,11 @@ static int ap_thread_flag = 0;
 module_param_named(poll_thread, ap_thread_flag, int, 0000);
 MODULE_PARM_DESC(poll_thread, "Turn on/off poll thread, default is 0 (off).");
 
+int ap_hwrng_seed = 1;
+EXPORT_SYMBOL(ap_hwrng_seed);
+module_param_named(hwrng_seed, ap_hwrng_seed, int, S_IRUSR|S_IRGRP);
+MODULE_PARM_DESC(hwrng_seed, "Turn on/off hwrng auto seed, default is 1 (on).");
+
 static struct device *ap_root_device = NULL;
 static struct ap_config_info *ap_configuration;
 static DEFINE_SPINLOCK(ap_device_list_lock);
@@ -913,10 +918,15 @@ static int ap_device_probe(struct device *dev)
 	int rc;
 
 	ap_dev->drv = ap_drv;
+
+	spin_lock_bh(&ap_device_list_lock);
+	list_add(&ap_dev->list, &ap_device_list);
+	spin_unlock_bh(&ap_device_list_lock);
+
 	rc = ap_drv->probe ? ap_drv->probe(ap_dev) : -ENODEV;
-	if (!rc) {
+	if (rc) {
 		spin_lock_bh(&ap_device_list_lock);
-		list_add(&ap_dev->list, &ap_device_list);
+		list_del_init(&ap_dev->list);
 		spin_unlock_bh(&ap_device_list_lock);
 	}
 	return rc;
