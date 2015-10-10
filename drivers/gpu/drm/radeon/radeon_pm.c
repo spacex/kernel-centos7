@@ -661,7 +661,7 @@ static int radeon_hwmon_init(struct radeon_device *rdev)
 				"Unable to register hwmon device: %d\n", err);
 			break;
 		}
-		dev_set_drvdata(rdev->pm.int_hwmon_dev, rdev->ddev);
+		dev_set_drvdata(rdev->pm.int_hwmon_dev, rdev);
 		err = sysfs_create_group(&rdev->pm.int_hwmon_dev->kobj,
 					 &hwmon_attrgroup);
 		if (err) {
