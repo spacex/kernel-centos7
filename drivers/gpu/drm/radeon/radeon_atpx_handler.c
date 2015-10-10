@@ -540,6 +540,16 @@ static bool radeon_atpx_detect(void)
 		printk(KERN_INFO "VGA switcheroo: detected switching method %s handle\n",
 		       acpi_method_name);
 		radeon_atpx_priv.atpx_detected = true;
+		/*
+		 * On some systems hotplug events are generated for the device
+		 * being switched off when ATPX is executed.  They cause ACPI
+		 * hotplug to trigger and attempt to remove the device from
+		 * the system, which causes it to break down.  Prevent that from
+		 * happening by setting the no_hotplug flag for the involved
+		 * ACPI device objects.
+		 */
+		acpi_bus_no_hotplug(radeon_atpx_priv.dhandle);
+		acpi_bus_no_hotplug(radeon_atpx_priv.other_handle);
 		return true;
 	}
 	return false;
