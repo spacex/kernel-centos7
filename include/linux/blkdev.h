@@ -24,6 +24,8 @@
 
 #include <asm/scatterlist.h>
 
+#include <linux/rh_kabi.h>
+
 struct module;
 struct scsi_ioctl_command;
 
@@ -90,18 +92,24 @@ enum rq_cmd_type_bits {
 #define BLK_MAX_CDB	16
 
 /*
- * try to put the fields that are referenced together in the same cacheline.
- * if you modify this structure, be sure to check block/blk-core.c:blk_rq_init()
- * as well!
+ * Try to put the fields that are referenced together in the same cacheline.
+ *
+ * If you modify this structure, make sure to update blk_rq_init() and
+ * especially blk_mq_rq_ctx_init() to take care of the added fields.
  */
 struct request {
+#ifdef __GENKSYMS__
 	union {
 		struct list_head queuelist;
 		struct llist_node ll_list;
 	};
+#else
+	struct list_head queuelist;
+#endif
 	union {
 		struct call_single_data csd;
-		struct work_struct mq_flush_work;
+		RH_KABI_REPLACE(struct work_struct mq_flush_work,
+			        unsigned long fifo_time)
 	};
 
 	struct request_queue *q;
@@ -120,7 +128,22 @@ struct request {
 	struct bio *bio;
 	struct bio *biotail;
 
+#ifdef __GENKSYMS__
 	struct hlist_node hash;	/* merge hash */
+#else
+	/*
+	 * The hash is used inside the scheduler, and killed once the
+	 * request reaches the dispatch list. The ipi_list is only used
+	 * to queue the request for softirq completion, which is long
+	 * after the request has been unhashed (and even removed from
+	 * the dispatch list).
+	 */
+	union {
+		struct hlist_node hash;	/* merge hash */
+		struct list_head ipi_list;
+	};
+#endif
+
 	/*
 	 * The rb_node is only used inside the io scheduler, requests
 	 * are pruned when moved to the dispatch queue. So let the
@@ -298,10 +321,9 @@ struct queue_limits {
 	 * allow extending the structure while preserving ABI.
 	 */
 	unsigned int		xcopy_reserved;
-
-	unsigned long		rh_reserved1;
-	unsigned long		rh_reserved2;
-	unsigned long		rh_reserved3;
+	RH_KABI_USE(1, unsigned int chunk_sectors)
+	RH_KABI_RESERVE(2)
+	RH_KABI_RESERVE(3)
 };
 
 struct request_queue {
@@ -336,7 +358,9 @@ struct request_queue {
 	unsigned int		*mq_map;
 
 	/* sw queues */
-	struct blk_mq_ctx	*queue_ctx;
+	RH_KABI_REPLACE_P(struct blk_mq_ctx	*queue_ctx,
+		          struct blk_mq_ctx __percpu	*queue_ctx)
+
 	unsigned int		nr_queues;
 
 	/* hw dispatch queues */
@@ -482,9 +506,15 @@ struct request_queue {
 	struct percpu_counter	mq_usage_counter;
 	struct list_head	all_q_node;
 
-#ifndef __GENKSYMS__
-	unprep_rq_fn		*unprep_rq_fn;
-#endif
+	RH_KABI_EXTEND(unprep_rq_fn		*unprep_rq_fn)
+
+	RH_KABI_EXTEND(struct blk_mq_tag_set	*tag_set)
+	RH_KABI_EXTEND(struct list_head		tag_set_list)
+
+	RH_KABI_EXTEND(struct list_head		requeue_list)
+	RH_KABI_EXTEND(spinlock_t			requeue_lock)
+	RH_KABI_EXTEND(struct work_struct		requeue_work)
+	RH_KABI_EXTEND(int				mq_freeze_depth)
 };
 
 #define QUEUE_FLAG_QUEUED	1	/* uses generic tag queueing */
@@ -509,6 +539,8 @@ struct request_queue {
 #define QUEUE_FLAG_DEAD        19	/* queue tear-down finished */
 #define QUEUE_FLAG_INIT_DONE   20	/* queue is initialized */
 #define QUEUE_FLAG_UNPRIV_SGIO 21	/* SG_IO free for unprivileged users */
+#define QUEUE_FLAG_NO_SG_MERGE 22	/* don't attempt to merge SG segments*/
+#define QUEUE_FLAG_SG_GAPS     23	/* queue doesn't support SG gaps */
 
 #define QUEUE_FLAG_DEFAULT	((1 << QUEUE_FLAG_IO_STAT) |		\
 				 (1 << QUEUE_FLAG_STACKABLE)	|	\
@@ -619,6 +651,15 @@ static inline void queue_flag_clear(unsigned int flag, struct request_queue *q)
 #define list_entry_rq(ptr)	list_entry((ptr), struct request, queuelist)
 
 #define rq_data_dir(rq)		(((rq)->cmd_flags & 1) != 0)
+
+/*
+ * Driver can handle struct request, if it either has an old style
+ * request_fn defined, or is blk-mq based.
+ */
+static inline bool queue_is_rq_based(struct request_queue *q)
+{
+	return q->request_fn || q->mq_ops;
+}
 
 static inline unsigned int blk_queue_cluster(struct request_queue *q)
 {
@@ -785,6 +826,7 @@ extern void __blk_put_request(struct request_queue *, struct request *);
 extern struct request *blk_get_request(struct request_queue *, int, gfp_t);
 extern struct request *blk_make_request(struct request_queue *, struct bio *,
 					gfp_t);
+extern void blk_rq_set_block_pc(struct request *);
 extern void blk_requeue_request(struct request_queue *, struct request *);
 extern void blk_add_request_payload(struct request *rq, struct page *page,
 		unsigned int len);
@@ -850,7 +892,7 @@ extern void blk_execute_rq_nowait(struct request_queue *, struct gendisk *,
 
 static inline struct request_queue *bdev_get_queue(struct block_device *bdev)
 {
-	return bdev->bd_disk->queue;
+	return bdev->bd_disk->queue;	/* this is never NULL */
 }
 
 /*
@@ -900,6 +942,20 @@ static inline unsigned int blk_queue_get_max_sectors(struct request_queue *q,
 	return q->limits.max_sectors;
 }
 
+/*
+ * Return maximum size of a request at given offset. Only valid for
+ * file system requests.
+ */
+static inline unsigned int blk_max_size_offset(struct request_queue *q,
+					       sector_t offset)
+{
+	if (!q->limits.chunk_sectors)
+		return q->limits.max_sectors;
+
+	return q->limits.chunk_sectors -
+			(offset & (q->limits.chunk_sectors - 1));
+}
+
 static inline unsigned int blk_rq_get_max_sectors(struct request *rq)
 {
 	struct request_queue *q = rq->q;
@@ -907,7 +963,11 @@ static inline unsigned int blk_rq_get_max_sectors(struct request *rq)
 	if (unlikely(rq->cmd_type == REQ_TYPE_BLOCK_PC))
 		return q->limits.max_hw_sectors;
 
-	return blk_queue_get_max_sectors(q, rq->cmd_flags);
+	if (!q->limits.chunk_sectors)
+		return blk_queue_get_max_sectors(q, rq->cmd_flags);
+
+	return min(blk_max_size_offset(q, blk_rq_pos(rq)),
+			blk_queue_get_max_sectors(q, rq->cmd_flags));
 }
 
 static inline unsigned int blk_rq_count_bios(struct request *rq)
@@ -943,6 +1003,7 @@ extern struct request *blk_fetch_request(struct request_queue *q);
  */
 extern bool blk_update_request(struct request *rq, int error,
 			       unsigned int nr_bytes);
+extern void blk_finish_request(struct request *rq, int error);
 extern bool blk_end_request(struct request *rq, int error,
 			    unsigned int nr_bytes);
 extern void blk_end_request_all(struct request *rq, int error);
@@ -972,6 +1033,7 @@ extern void blk_queue_make_request(struct request_queue *, make_request_fn *);
 extern void blk_queue_bounce_limit(struct request_queue *, u64);
 extern void blk_limits_max_hw_sectors(struct queue_limits *, unsigned int);
 extern void blk_queue_max_hw_sectors(struct request_queue *, unsigned int);
+extern void blk_queue_chunk_sectors(struct request_queue *, unsigned int);
 extern void blk_queue_max_segments(struct request_queue *, unsigned short);
 extern void blk_queue_max_segment_size(struct request_queue *, unsigned int);
 extern void blk_queue_max_discard_sectors(struct request_queue *q,
@@ -1108,7 +1170,8 @@ static inline bool blk_needs_flush_plug(struct task_struct *tsk)
 /*
  * tag stuff
  */
-#define blk_rq_tagged(rq)		((rq)->cmd_flags & REQ_QUEUED)
+#define blk_rq_tagged(rq) \
+	((rq)->mq_ctx || ((rq)->cmd_flags & REQ_QUEUED))
 extern int blk_queue_start_tag(struct request_queue *, struct request *);
 extern struct request *blk_queue_find_tag(struct request_queue *, int);
 extern void blk_queue_end_tag(struct request_queue *, struct request *);
@@ -1251,10 +1314,9 @@ static inline int queue_alignment_offset(struct request_queue *q)
 static inline int queue_limit_alignment_offset(struct queue_limits *lim, sector_t sector)
 {
 	unsigned int granularity = max(lim->physical_block_size, lim->io_min);
-	unsigned int alignment = (sector << 9) & (granularity - 1);
+	unsigned int alignment = sector_div(sector, granularity >> 9) << 9;
 
-	return (granularity + lim->alignment_offset - alignment)
-		& (granularity - 1);
+	return (granularity + lim->alignment_offset - alignment) % granularity;
 }
 
 static inline int bdev_alignment_offset(struct block_device *bdev)
@@ -1377,8 +1439,9 @@ static inline void put_dev_sector(Sector p)
 }
 
 struct work_struct;
-int kblockd_schedule_work(struct request_queue *q, struct work_struct *work);
-int kblockd_schedule_delayed_work(struct request_queue *q, struct delayed_work *dwork, unsigned long delay);
+int kblockd_schedule_work(struct work_struct *work);
+int kblockd_schedule_delayed_work(struct delayed_work *dwork, unsigned long delay);
+int kblockd_schedule_delayed_work_on(int cpu, struct delayed_work *dwork, unsigned long delay);
 
 #ifdef CONFIG_BLK_CGROUP
 /*

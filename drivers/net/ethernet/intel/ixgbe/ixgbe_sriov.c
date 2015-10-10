@@ -20,6 +20,7 @@
   the file called "COPYING".
 
   Contact Information:
+  Linux NICS <linux.nics@intel.com>
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
@@ -152,7 +153,7 @@ void ixgbe_enable_sriov(struct ixgbe_adapter *adapter)
 		 * physical function.  If the user requests greater thn
 		 * 63 VFs then it is an error - reset to default of zero.
 		 */
-		adapter->num_vfs = min_t(unsigned int, adapter->num_vfs, 63);
+		adapter->num_vfs = min_t(unsigned int, adapter->num_vfs, IXGBE_MAX_VFS_DRV_LIMIT);
 
 		err = pci_enable_sriov(adapter->pdev, adapter->num_vfs);
 		if (err) {
@@ -259,7 +260,7 @@ static int ixgbe_pci_sriov_enable(struct pci_dev *dev, int num_vfs)
 	 * PF.  The PCI bus driver already checks for other values out of
 	 * range.
 	 */
-	if (num_vfs > 63) {
+	if (num_vfs > IXGBE_MAX_VFS_DRV_LIMIT) {
 		err = -EPERM;
 		goto err_out;
 	}
@@ -635,6 +636,27 @@ int ixgbe_vf_configuration(struct pci_dev *pdev, unsigned int event_mask)
 	return 0;
 }
 
+static inline void ixgbe_write_qde(struct ixgbe_adapter *adapter, u32 vf,
+                                   u32 qde)
+{
+        struct ixgbe_hw *hw = &adapter->hw;
+        struct ixgbe_ring_feature *vmdq = &adapter->ring_feature[RING_F_VMDQ];
+        u32 q_per_pool = __ALIGN_MASK(1, ~vmdq->mask);
+        int i;
+
+        for (i = vf * q_per_pool; i < ((vf + 1) * q_per_pool); i++) {
+                u32 reg;
+
+                /* flush previous write */
+                IXGBE_WRITE_FLUSH(hw);
+
+                /* indicate to hardware that we want to set drop enable */
+                reg = IXGBE_QDE_WRITE | IXGBE_QDE_ENABLE;
+                reg |= i <<  IXGBE_QDE_IDX_SHIFT;
+                IXGBE_WRITE_REG(hw, IXGBE_QDE, reg);
+        }
+}
+
 static int ixgbe_vf_reset_msg(struct ixgbe_adapter *adapter, u32 vf)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
@@ -659,6 +681,9 @@ static int ixgbe_vf_reset_msg(struct ixgbe_adapter *adapter, u32 vf)
 	reg = IXGBE_READ_REG(hw, IXGBE_VFTE(reg_offset));
 	reg |= 1 << vf_shift;
 	IXGBE_WRITE_REG(hw, IXGBE_VFTE(reg_offset), reg);
+
+	/* RHEL: set drop enable on all queues, needed for 550 enablement */
+	ixgbe_write_qde(adapter, vf, IXGBE_QDE_ENABLE);
 
 	/* enable receive for vf */
 	reg = IXGBE_READ_REG(hw, IXGBE_VFRE(reg_offset));
@@ -1099,6 +1124,12 @@ int ixgbe_ndo_set_vf_vlan(struct net_device *netdev, int vf, u16 vlan, u8 qos)
 		if (adapter->vfinfo[vf].spoofchk_enabled)
 			hw->mac.ops.set_vlan_anti_spoofing(hw, true, vf);
 		adapter->vfinfo[vf].vlan_count++;
+		
+		/* enable hide vlan on X550 */
+		if (hw->mac.type >= ixgbe_mac_X550)
+			ixgbe_write_qde(adapter, vf, IXGBE_QDE_ENABLE |
+					IXGBE_QDE_HIDE_VLAN);
+
 		adapter->vfinfo[vf].pf_vlan = vlan;
 		adapter->vfinfo[vf].pf_qos = qos;
 		dev_info(&adapter->pdev->dev,

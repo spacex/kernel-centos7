@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003 Christophe Saout <christophe@saout.de>
+ * Copyright (C) 2003 Jana Saout <jana@saout.de>
  * Copyright (C) 2004 Clemens Fruhwirth <clemens@endorphin.org>
  * Copyright (C) 2006-2009 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2013 Milan Broz <gmazyland@gmail.com>
@@ -19,7 +19,6 @@
 #include <linux/crypto.h>
 #include <linux/workqueue.h>
 #include <linux/backing-dev.h>
-#include <linux/percpu.h>
 #include <linux/atomic.h>
 #include <linux/scatterlist.h>
 #include <asm/page.h>
@@ -45,6 +44,7 @@ struct convert_context {
 	unsigned int idx_out;
 	sector_t cc_sector;
 	atomic_t cc_pending;
+	struct ablkcipher_request *req;
 };
 
 /*
@@ -61,7 +61,7 @@ struct dm_crypt_io {
 	int error;
 	sector_t sector;
 	struct dm_crypt_io *base_io;
-};
+} CRYPTO_MINALIGN_ATTR;
 
 struct dm_crypt_request {
 	struct convert_context *ctx;
@@ -113,15 +113,7 @@ struct iv_tcw_private {
 enum flags { DM_CRYPT_SUSPENDED, DM_CRYPT_KEY_VALID };
 
 /*
- * Duplicated per-CPU state for cipher.
- */
-struct crypt_cpu {
-	struct ablkcipher_request *req;
-};
-
-/*
- * The fields in here must be read only after initialization,
- * changing state should be in crypt_cpu.
+ * The fields in here must be read only after initialization.
  */
 struct crypt_config {
 	struct dm_dev *dev;
@@ -152,12 +144,6 @@ struct crypt_config {
 	sector_t iv_offset;
 	unsigned int iv_size;
 
-	/*
-	 * Duplicated per cpu state. Access through
-	 * per_cpu_ptr() only.
-	 */
-	struct crypt_cpu __percpu *cpu;
-
 	/* ESSIV: struct crypto_cipher *essiv_tfm */
 	void *iv_private;
 	struct crypto_ablkcipher **tfms;
@@ -178,6 +164,8 @@ struct crypt_config {
 	 */
 	unsigned int dmreq_start;
 
+	unsigned int per_bio_data_size;
+
 	unsigned long flags;
 	unsigned int key_size;
 	unsigned int key_parts;      /* independent parts in key buffer */
@@ -193,11 +181,6 @@ static struct kmem_cache *_crypt_io_pool;
 static void clone_init(struct dm_crypt_io *, struct bio *);
 static void kcryptd_queue_crypt(struct dm_crypt_io *io);
 static u8 *iv_of_dmreq(struct crypt_config *cc, struct dm_crypt_request *dmreq);
-
-static struct crypt_cpu *this_crypt_config(struct crypt_config *cc)
-{
-	return this_cpu_ptr(cc->cpu);
-}
 
 /*
  * Use this to access cipher attributes that are the same for each CPU.
@@ -914,16 +897,24 @@ static void kcryptd_async_done(struct crypto_async_request *async_req,
 static void crypt_alloc_req(struct crypt_config *cc,
 			    struct convert_context *ctx)
 {
-	struct crypt_cpu *this_cc = this_crypt_config(cc);
 	unsigned key_index = ctx->cc_sector & (cc->tfms_count - 1);
 
-	if (!this_cc->req)
-		this_cc->req = mempool_alloc(cc->req_pool, GFP_NOIO);
+	if (!ctx->req)
+		ctx->req = mempool_alloc(cc->req_pool, GFP_NOIO);
 
-	ablkcipher_request_set_tfm(this_cc->req, cc->tfms[key_index]);
-	ablkcipher_request_set_callback(this_cc->req,
+	ablkcipher_request_set_tfm(ctx->req, cc->tfms[key_index]);
+	ablkcipher_request_set_callback(ctx->req,
 	    CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
-	    kcryptd_async_done, dmreq_of_req(cc, this_cc->req));
+	    kcryptd_async_done, dmreq_of_req(cc, ctx->req));
+}
+
+static void crypt_free_req(struct crypt_config *cc,
+			   struct ablkcipher_request *req, struct bio *base_bio)
+{
+	struct dm_crypt_io *io = dm_per_bio_data(base_bio, cc->per_bio_data_size);
+
+	if ((struct ablkcipher_request *)(io + 1) != req)
+		mempool_free(req, cc->req_pool);
 }
 
 /*
@@ -932,7 +923,6 @@ static void crypt_alloc_req(struct crypt_config *cc,
 static int crypt_convert(struct crypt_config *cc,
 			 struct convert_context *ctx)
 {
-	struct crypt_cpu *this_cc = this_crypt_config(cc);
 	int r;
 
 	atomic_set(&ctx->cc_pending, 1);
@@ -944,7 +934,7 @@ static int crypt_convert(struct crypt_config *cc,
 
 		atomic_inc(&ctx->cc_pending);
 
-		r = crypt_convert_block(cc, ctx, this_cc->req);
+		r = crypt_convert_block(cc, ctx, ctx->req);
 
 		switch (r) {
 		/* async */
@@ -953,7 +943,7 @@ static int crypt_convert(struct crypt_config *cc,
 			INIT_COMPLETION(ctx->restart);
 			/* fall through*/
 		case -EINPROGRESS:
-			this_cc->req = NULL;
+			ctx->req = NULL;
 			ctx->cc_sector++;
 			continue;
 
@@ -1041,20 +1031,16 @@ static void crypt_free_buffer_pages(struct crypt_config *cc, struct bio *clone)
 	}
 }
 
-static struct dm_crypt_io *crypt_io_alloc(struct crypt_config *cc,
-					  struct bio *bio, sector_t sector)
+static void crypt_io_init(struct dm_crypt_io *io, struct crypt_config *cc,
+			  struct bio *bio, sector_t sector)
 {
-	struct dm_crypt_io *io;
-
-	io = mempool_alloc(cc->io_pool, GFP_NOIO);
 	io->cc = cc;
 	io->base_bio = bio;
 	io->sector = sector;
 	io->error = 0;
 	io->base_io = NULL;
+	io->ctx.req = NULL;
 	atomic_set(&io->io_pending, 0);
-
-	return io;
 }
 
 static void crypt_inc_pending(struct dm_crypt_io *io)
@@ -1077,7 +1063,10 @@ static void crypt_dec_pending(struct dm_crypt_io *io)
 	if (!atomic_dec_and_test(&io->io_pending))
 		return;
 
-	mempool_free(io, cc->io_pool);
+	if (io->ctx.req)
+		crypt_free_req(cc, io->ctx.req, base_bio);
+	if (io != dm_per_bio_data(base_bio, cc->per_bio_data_size))
+		mempool_free(io, cc->io_pool);
 
 	if (likely(!base_io))
 		bio_endio(base_bio, error);
@@ -1285,8 +1274,8 @@ static void kcryptd_crypt_write_convert(struct dm_crypt_io *io)
 		 * between fragments, so switch to a new dm_crypt_io structure.
 		 */
 		if (unlikely(!crypt_finished && remaining)) {
-			new_io = crypt_io_alloc(io->cc, io->base_bio,
-						sector);
+			new_io = mempool_alloc(cc->io_pool, GFP_NOIO);
+			crypt_io_init(new_io, io->cc, io->base_bio, sector);
 			crypt_inc_pending(new_io);
 			crypt_convert_init(cc, &new_io->ctx, NULL,
 					   io->base_bio, sector);
@@ -1356,7 +1345,7 @@ static void kcryptd_async_done(struct crypto_async_request *async_req,
 	if (error < 0)
 		io->error = -EIO;
 
-	mempool_free(req_of_dmreq(cc, dmreq), cc->req_pool);
+	crypt_free_req(cc, req_of_dmreq(cc, dmreq), io->base_bio);
 
 	if (!atomic_dec_and_test(&ctx->cc_pending))
 		return;
@@ -1505,8 +1494,6 @@ static int crypt_wipe_key(struct crypt_config *cc)
 static void crypt_dtr(struct dm_target *ti)
 {
 	struct crypt_config *cc = ti->private;
-	struct crypt_cpu *cpu_cc;
-	int cpu;
 
 	ti->private = NULL;
 
@@ -1517,13 +1504,6 @@ static void crypt_dtr(struct dm_target *ti)
 		destroy_workqueue(cc->io_queue);
 	if (cc->crypt_queue)
 		destroy_workqueue(cc->crypt_queue);
-
-	if (cc->cpu)
-		for_each_possible_cpu(cpu) {
-			cpu_cc = per_cpu_ptr(cc->cpu, cpu);
-			if (cpu_cc->req)
-				mempool_free(cpu_cc->req, cc->req_pool);
-		}
 
 	crypt_free_tfms(cc);
 
@@ -1542,9 +1522,6 @@ static void crypt_dtr(struct dm_target *ti)
 
 	if (cc->dev)
 		dm_put_device(ti, cc->dev);
-
-	if (cc->cpu)
-		free_percpu(cc->cpu);
 
 	kzfree(cc->cipher);
 	kzfree(cc->cipher_string);
@@ -1600,13 +1577,6 @@ static int crypt_ctr_cipher(struct dm_target *ti,
 
 	if (tmp)
 		DMWARN("Ignoring unexpected additional cipher options");
-
-	cc->cpu = __alloc_percpu(sizeof(*(cc->cpu)),
-				 __alignof__(struct crypt_cpu));
-	if (!cc->cpu) {
-		ti->error = "Cannot allocate per cpu state";
-		goto bad_mem;
-	}
 
 	/*
 	 * For compatibility with the original dm-crypt mapping format, if
@@ -1731,6 +1701,7 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	unsigned int key_size, opt_params;
 	unsigned long long tmpll;
 	int ret;
+	size_t iv_size_padding;
 	struct dm_arg_set as;
 	const char *opt_string;
 	char dummy;
@@ -1767,16 +1738,32 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	cc->dmreq_start = sizeof(struct ablkcipher_request);
 	cc->dmreq_start += crypto_ablkcipher_reqsize(any_tfm(cc));
-	cc->dmreq_start = ALIGN(cc->dmreq_start, crypto_tfm_ctx_alignment());
-	cc->dmreq_start += crypto_ablkcipher_alignmask(any_tfm(cc)) &
-			   ~(crypto_tfm_ctx_alignment() - 1);
+	cc->dmreq_start = ALIGN(cc->dmreq_start, __alignof__(struct dm_crypt_request));
+
+	if (crypto_ablkcipher_alignmask(any_tfm(cc)) < CRYPTO_MINALIGN) {
+		/* Allocate the padding exactly */
+		iv_size_padding = -(cc->dmreq_start + sizeof(struct dm_crypt_request))
+				& crypto_ablkcipher_alignmask(any_tfm(cc));
+	} else {
+		/*
+		 * If the cipher requires greater alignment than kmalloc
+		 * alignment, we don't know the exact position of the
+		 * initialization vector. We must assume worst case.
+		 */
+		iv_size_padding = crypto_ablkcipher_alignmask(any_tfm(cc));
+	}
 
 	cc->req_pool = mempool_create_kmalloc_pool(MIN_IOS, cc->dmreq_start +
-			sizeof(struct dm_crypt_request) + cc->iv_size);
+			sizeof(struct dm_crypt_request) + iv_size_padding + cc->iv_size);
 	if (!cc->req_pool) {
 		ti->error = "Cannot allocate crypt request mempool";
 		goto bad;
 	}
+
+	cc->per_bio_data_size = ti->per_bio_data_size =
+		ALIGN(sizeof(struct dm_crypt_io) + cc->dmreq_start +
+		      sizeof(struct dm_crypt_request) + iv_size_padding + cc->iv_size,
+		      ARCH_KMALLOC_MINALIGN);
 
 	cc->page_pool = mempool_create_page_pool(MIN_POOL_PAGES, 0);
 	if (!cc->page_pool) {
@@ -1873,7 +1860,9 @@ static int crypt_map(struct dm_target *ti, struct bio *bio)
 		return DM_MAPIO_REMAPPED;
 	}
 
-	io = crypt_io_alloc(cc, bio, dm_target_offset(ti, bio->bi_sector));
+	io = dm_per_bio_data(bio, cc->per_bio_data_size);
+	crypt_io_init(io, cc, bio, dm_target_offset(ti, bio->bi_sector));
+	io->ctx.req = (struct ablkcipher_request *)(io + 1);
 
 	if (bio_data_dir(io->base_bio) == READ) {
 		if (kcryptd_io_read(io, GFP_NOWAIT))
@@ -2045,6 +2034,6 @@ static void __exit dm_crypt_exit(void)
 module_init(dm_crypt_init);
 module_exit(dm_crypt_exit);
 
-MODULE_AUTHOR("Christophe Saout <christophe@saout.de>");
+MODULE_AUTHOR("Jana Saout <jana@saout.de>");
 MODULE_DESCRIPTION(DM_NAME " target for transparent encryption / decryption");
 MODULE_LICENSE("GPL");

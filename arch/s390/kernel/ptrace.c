@@ -193,7 +193,7 @@ static unsigned long __peek_user(struct task_struct *child, addr_t addr)
 		if (addr == (addr_t) &dummy->regs.psw.mask) {
 			/* Return a clean psw mask. */
 			tmp &= PSW_MASK_USER | PSW_MASK_RI;
-			tmp |= psw_user_bits;
+			tmp |= PSW_USER_BITS;
 		}
 
 	} else if (addr < (addr_t) &dummy->regs.orig_gpr2) {
@@ -318,11 +318,14 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 			unsigned long mask = PSW_MASK_USER;
 
 			mask |= is_ri_task(child) ? PSW_MASK_RI : 0;
-			if (((data^psw_user_bits) & ~mask) ||
-			    (((data^psw_user_bits) & PSW_MASK_ASC) &&
-			     ((data|psw_user_bits) & PSW_MASK_ASC) == PSW_MASK_ASC))
+			if ((data ^ PSW_USER_BITS) & ~mask)
+				/* Invalid psw mask. */
+				return -EINVAL;
+			if ((data & PSW_MASK_ASC) == PSW_ASC_HOME)
+				/* Invalid address-space-control bits */
 				return -EINVAL;
 			if ((data & PSW_MASK_EA) && !(data & PSW_MASK_BA))
+				/* Invalid addressing mode bits */
 				return -EINVAL;
 		}
 		*(addr_t *)((addr_t) &task_pt_regs(child)->psw + addr) = data;
@@ -537,7 +540,7 @@ static u32 __peek_user_compat(struct task_struct *child, addr_t addr)
 			/* Fake a 31 bit psw mask. */
 			tmp = (__u32)(regs->psw.mask >> 32);
 			tmp &= PSW32_MASK_USER | PSW32_MASK_RI;
-			tmp |= psw32_user_bits;
+			tmp |= PSW32_USER_BITS;
 		} else if (addr == (addr_t) &dummy32->regs.psw.addr) {
 			/* Fake a 31 bit psw address. */
 			tmp = (__u32) regs->psw.addr |
@@ -638,11 +641,11 @@ static int __poke_user_compat(struct task_struct *child,
 
 			mask |= is_ri_task(child) ? PSW32_MASK_RI : 0;
 			/* Build a 64 bit psw mask from 31 bit mask. */
-			if ((tmp & ~mask) != psw32_user_bits)
-			if (((tmp^psw32_user_bits) & ~mask) ||
-			    (((tmp^psw32_user_bits) & PSW32_MASK_ASC) &&
-			     ((tmp|psw32_user_bits) & PSW32_MASK_ASC) == PSW32_MASK_ASC))
+			if ((tmp ^ PSW32_USER_BITS) & ~mask)
 				/* Invalid psw mask. */
+				return -EINVAL;
+			if ((data & PSW32_MASK_ASC) == PSW32_ASC_HOME)
+				/* Invalid address-space-control bits */
 				return -EINVAL;
 			regs->psw.mask = (regs->psw.mask & ~PSW_MASK_USER) |
 				(regs->psw.mask & PSW_MASK_BA) |
@@ -789,9 +792,7 @@ asmlinkage long do_syscall_trace_enter(struct pt_regs *regs)
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_enter(regs, regs->gprs[2]);
 
-	audit_syscall_entry(is_compat_task() ?
-				AUDIT_ARCH_S390 : AUDIT_ARCH_S390X,
-			    regs->gprs[2], regs->orig_gpr2,
+	audit_syscall_entry(regs->gprs[2], regs->orig_gpr2,
 			    regs->gprs[3], regs->gprs[4],
 			    regs->gprs[5]);
 out:

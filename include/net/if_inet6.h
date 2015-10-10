@@ -18,6 +18,8 @@
 #include <net/snmp.h>
 #include <linux/ipv6.h>
 
+#include <linux/rh_kabi.h>
+
 /* inet6_dev.if_flags */
 
 #define IF_RA_OTHERCONF	0x80
@@ -206,9 +208,7 @@ struct inet6_dev {
 
 	unsigned long		tstamp; /* ipv6InterfaceTable update timestamp */
 	struct rcu_head		rcu;
-#ifndef __GENKSYMS__
-	__u8			addr_gen_mode;
-#endif
+	RH_KABI_EXTEND(__u8			addr_gen_mode)
 };
 
 static inline void ipv6_eth_mc_map(const struct in6_addr *addr, char *buf)

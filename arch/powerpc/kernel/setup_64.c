@@ -36,6 +36,7 @@
 #include <linux/lockdep.h>
 #include <linux/memblock.h>
 #include <linux/hugetlb.h>
+#include <linux/memory.h>
 
 #include <asm/io.h>
 #include <asm/kdump.h>
@@ -67,15 +68,12 @@
 #include <asm/kvm_ppc.h>
 #include <asm/hugetlb.h>
 
-#include "setup.h"
-
 #ifdef DEBUG
 #define DBG(fmt...) udbg_printf(fmt)
 #else
 #define DBG(fmt...)
 #endif
 
-int boot_cpuid = 0;
 int spinning_secondaries;
 u64 ppc64_pft_size;
 
@@ -165,6 +163,19 @@ static void fixup_boot_paca(void)
 	get_paca()->data_offset = 0;
 }
 
+static void cpu_ready_for_interrupts(void)
+{
+	/* Set IR and DR in PACA MSR */
+	get_paca()->kernel_msr = MSR_KERNEL;
+
+	/* Enable AIL if supported */
+	if (cpu_has_feature(CPU_FTR_HVMODE) &&
+	    cpu_has_feature(CPU_FTR_ARCH_207S)) {
+		unsigned long lpcr = mfspr(SPRN_LPCR);
+		mtspr(SPRN_LPCR, lpcr | LPCR_AIL_3);
+	}
+}
+
 /*
  * Early initialization entry point. This is called by head.S
  * with MMU translation disabled. We rely on the "feature" of
@@ -230,6 +241,16 @@ void __init early_setup(unsigned long dt_ptr)
 	early_init_mmu();
 
 	/*
+	 * At this point, we can let interrupts switch to virtual mode
+	 * (the MMU has been setup), so adjust the MSR in the PACA to
+	 * have IR and DR set and enable AIL if it exists
+	 */
+	cpu_ready_for_interrupts();
+
+	/* Reserve large chunks of memory for use by CMA for KVM */
+	kvm_cma_reserve();
+
+	/*
 	 * Reserve any gigantic pages requested on the command line.
 	 * memblock needs to have been initialized by the time this is
 	 * called since this will reserve memory.
@@ -247,6 +268,13 @@ void early_setup_secondary(void)
 
 	/* Initialize the hash table or TLB handling */
 	early_init_mmu_secondary();
+
+	/*
+	 * At this point, we can let interrupts switch to virtual mode
+	 * (the MMU has been setup), so adjust the MSR in the PACA to
+	 * have IR and DR set.
+	 */
+	cpu_ready_for_interrupts();
 }
 
 #endif /* CONFIG_SMP */
@@ -267,7 +295,7 @@ void smp_release_cpus(void)
 
 	ptr  = (unsigned long *)((unsigned long)&__secondary_hold_spinloop
 			- PHYSICAL_START);
-	*ptr = __pa(generic_secondary_smp_init);
+	*ptr = ppc_function_entry(generic_secondary_smp_init);
 
 	/* And wait a bit for them to catch up */
 	for (i = 0; i < 100000; i++) {
@@ -529,7 +557,8 @@ static void __init exc_lvl_early_init(void)
 
 /*
  * Stack space used when we detect a bad kernel stack pointer, and
- * early in SMP boots before relocation is enabled.
+ * early in SMP boots before relocation is enabled. Exclusive emergency
+ * stack for machine checks.
  */
 static void __init emergency_stack_init(void)
 {
@@ -552,6 +581,13 @@ static void __init emergency_stack_init(void)
 		sp  = memblock_alloc_base(THREAD_SIZE, THREAD_SIZE, limit);
 		sp += THREAD_SIZE;
 		paca[i].emergency_sp = __va(sp);
+
+#ifdef CONFIG_PPC_BOOK3S_64
+		/* emergency stack for machine check exception handling. */
+		sp  = memblock_alloc_base(THREAD_SIZE, THREAD_SIZE, limit);
+		sp += THREAD_SIZE;
+		paca[i].mc_emergency_sp = __va(sp);
+#endif
 	}
 }
 
@@ -572,9 +608,6 @@ void __init setup_arch(char **cmdline_p)
 	 */
 	dcache_bsize = ppc64_caches.dline_size;
 	icache_bsize = ppc64_caches.iline_size;
-
-	/* reboot on panic */
-	panic_timeout = 180;
 
 	if (ppc_md.panic)
 		setup_panic();
@@ -608,8 +641,6 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Initialize the MMU context management stuff */
 	mmu_context_init();
-
-	kvm_linear_init();
 
 	/* Interrupt code needs to be 64K-aligned */
 	if ((unsigned long)_stext & 0xffff)
@@ -700,9 +731,17 @@ void __init setup_per_cpu_areas(void)
 }
 #endif
 
+#ifdef CONFIG_MEMORY_HOTPLUG_SPARSE
+unsigned long memory_block_size_bytes(void)
+{
+	if (ppc_md.memory_block_size)
+		return ppc_md.memory_block_size();
 
-#ifdef CONFIG_PPC_INDIRECT_IO
+	return MIN_MEMORY_BLOCK_SIZE;
+}
+#endif
+
+#if defined(CONFIG_PPC_INDIRECT_PIO) || defined(CONFIG_PPC_INDIRECT_MMIO)
 struct ppc_pci_io ppc_pci_io;
 EXPORT_SYMBOL(ppc_pci_io);
-#endif /* CONFIG_PPC_INDIRECT_IO */
-
+#endif

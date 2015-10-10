@@ -527,6 +527,7 @@ enum fw_flowc_mnem {
 	FW_FLOWC_MNEM_RCVNXT,
 	FW_FLOWC_MNEM_SNDBUF,
 	FW_FLOWC_MNEM_MSS,
+	FW_FLOWC_MNEM_TXDATAPLEN_MAX,
 };
 
 struct fw_flowc_mnemval {
@@ -932,6 +933,9 @@ enum fw_params_param_dev {
 	FW_PARAMS_PARAM_DEV_FWREV = 0x0B,
 	FW_PARAMS_PARAM_DEV_TPREV = 0x0C,
 	FW_PARAMS_PARAM_DEV_CF = 0x0D,
+	FW_PARAMS_PARAM_DEV_MAXORDIRD_QP = 0x13, /* max supported QP IRD/ORD */
+	FW_PARAMS_PARAM_DEV_MAXIRD_ADAPTER = 0x14, /* max supported adap IRD */
+	FW_PARAMS_PARAM_DEV_ULPTX_MEMWRITE_DSGL = 0x17,
 };
 
 /*
@@ -1221,6 +1225,7 @@ struct fw_eq_eth_cmd {
 #define FW_EQ_ETH_CMD_CIDXFTHRESH(x) ((x) << 16)
 #define FW_EQ_ETH_CMD_EQSIZE(x) ((x) << 0)
 
+#define FW_EQ_ETH_CMD_AUTOEQUEQE (1U << 30)
 #define FW_EQ_ETH_CMD_VIID(x) ((x) << 16)
 
 struct fw_eq_ctrl_cmd {
@@ -1742,6 +1747,9 @@ enum fw_port_type {
 	FW_PORT_TYPE_SFP,
 	FW_PORT_TYPE_BP_AP,
 	FW_PORT_TYPE_BP4_AP,
+	FW_PORT_TYPE_QSFP_10G,
+	FW_PORT_TYPE_QSFP,
+	FW_PORT_TYPE_BP40_BA,
 
 	FW_PORT_TYPE_NONE = FW_PORT_CMD_PTYPE_MASK
 };
@@ -2154,6 +2162,10 @@ struct fw_debug_cmd {
 #define FW_PCIE_FW_MASTER(x)     ((x) << FW_PCIE_FW_MASTER_SHIFT)
 #define FW_PCIE_FW_MASTER_GET(x) (((x) >> FW_PCIE_FW_MASTER_SHIFT) & \
 				 FW_PCIE_FW_MASTER_MASK)
+#define FW_PCIE_FW_EVAL_MASK   0x7
+#define FW_PCIE_FW_EVAL_SHIFT  24
+#define FW_PCIE_FW_EVAL_GET(x) (((x) >> FW_PCIE_FW_EVAL_SHIFT) & \
+				 FW_PCIE_FW_EVAL_MASK)
 
 struct fw_hdr {
 	u8 ver;

@@ -3509,8 +3509,10 @@ static int cm_init_qp_rtr_attr(struct cm_id_private *cm_id_priv,
 		*qp_attr_mask = IB_QP_STATE | IB_QP_AV | IB_QP_PATH_MTU |
 				IB_QP_DEST_QPN | IB_QP_RQ_PSN;
 		qp_attr->ah_attr = cm_id_priv->av.ah_attr;
-		if (!cm_id_priv->av.valid)
+		if (!cm_id_priv->av.valid) {
+			spin_unlock_irqrestore(&cm_id_priv->lock, flags);
 			return -EINVAL;
+		}
 		if (cm_id_priv->av.ah_attr.vlan_id != 0xffff) {
 			qp_attr->vlan_id = cm_id_priv->av.ah_attr.vlan_id;
 			*qp_attr_mask |= IB_QP_VID;
@@ -3751,7 +3753,7 @@ static void cm_add_one(struct ib_device *ib_device)
 	struct cm_port *port;
 	struct ib_mad_reg_req reg_req = {
 		.mgmt_class = IB_MGMT_CLASS_CM,
-		.mgmt_class_version = IB_CM_CLASS_VERSION
+		.mgmt_class_version = IB_CM_CLASS_VERSION,
 	};
 	struct ib_port_modify port_modify = {
 		.set_port_cap_mask = IB_PORT_CM_SUP
@@ -3799,7 +3801,8 @@ static void cm_add_one(struct ib_device *ib_device)
 							0,
 							cm_send_handler,
 							cm_recv_handler,
-							port);
+							port,
+							0);
 		if (IS_ERR(port->mad_agent))
 			goto error2;
 

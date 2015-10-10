@@ -38,7 +38,7 @@ nv04_devinit_meminit(struct nouveau_devinit *devinit)
 	int i;
 
 	/* Map the framebuffer aperture */
-	fb = fbmem_init(nv_device(priv)->pdev);
+	fb = fbmem_init(nv_device(priv));
 	if (!fb) {
 		nv_error(priv, "failed to map fb\n");
 		return;
@@ -163,7 +163,8 @@ setPLL_single(struct nouveau_devinit *devinit, u32 reg,
 		/* downclock -- write new NM first */
 		nv_wr32(devinit, reg, (oldpll & 0xffff0000) | pv->NM1);
 
-	if (chip_version < 0x17 && chip_version != 0x11)
+	if ((chip_version < 0x17 || chip_version == 0x1a) &&
+	    chip_version != 0x11)
 		/* wait a bit on older chips */
 		msleep(64);
 	nv_rd32(devinit, reg);

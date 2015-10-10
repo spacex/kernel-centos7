@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel 10 Gigabit PCI Express Linux driver
-  Copyright(c) 1999 - 2013 Intel Corporation.
+  Copyright(c) 1999 - 2014 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -20,6 +20,7 @@
   the file called "COPYING".
 
   Contact Information:
+  Linux NICS <linux.nics@intel.com>
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
@@ -493,6 +494,8 @@ static void ixgbe_get_regs(struct net_device *netdev,
 			break;
 		case ixgbe_mac_82599EB:
 		case ixgbe_mac_X540:
+		case ixgbe_mac_X550:
+		case ixgbe_mac_X550EM_x:
 			regs_buff[35 + i] = IXGBE_READ_REG(hw, IXGBE_FCRTL_82599(i));
 			regs_buff[43 + i] = IXGBE_READ_REG(hw, IXGBE_FCRTH_82599(i));
 			break;
@@ -582,18 +585,49 @@ static void ixgbe_get_regs(struct net_device *netdev,
 	regs_buff[828] = IXGBE_READ_REG(hw, IXGBE_FHFT(0));
 
 	/* DCB */
-	regs_buff[829] = IXGBE_READ_REG(hw, IXGBE_RMCS);
-	regs_buff[830] = IXGBE_READ_REG(hw, IXGBE_DPMCS);
-	regs_buff[831] = IXGBE_READ_REG(hw, IXGBE_PDPMCS);
-	regs_buff[832] = IXGBE_READ_REG(hw, IXGBE_RUPPBMR);
-	for (i = 0; i < 8; i++)
-		regs_buff[833 + i] = IXGBE_READ_REG(hw, IXGBE_RT2CR(i));
-	for (i = 0; i < 8; i++)
-		regs_buff[841 + i] = IXGBE_READ_REG(hw, IXGBE_RT2SR(i));
-	for (i = 0; i < 8; i++)
-		regs_buff[849 + i] = IXGBE_READ_REG(hw, IXGBE_TDTQ2TCCR(i));
-	for (i = 0; i < 8; i++)
-		regs_buff[857 + i] = IXGBE_READ_REG(hw, IXGBE_TDTQ2TCSR(i));
+	regs_buff[829] = IXGBE_READ_REG(hw, IXGBE_RMCS);   /* same as FCCFG  */
+	regs_buff[831] = IXGBE_READ_REG(hw, IXGBE_PDPMCS); /* same as RTTPCS */
+
+	switch (hw->mac.type) {
+	case ixgbe_mac_82598EB:
+		regs_buff[830] = IXGBE_READ_REG(hw, IXGBE_DPMCS);
+		regs_buff[832] = IXGBE_READ_REG(hw, IXGBE_RUPPBMR);
+		for (i = 0; i < 8; i++)
+			regs_buff[833 + i] =
+				IXGBE_READ_REG(hw, IXGBE_RT2CR(i));
+		for (i = 0; i < 8; i++)
+			regs_buff[841 + i] =
+				IXGBE_READ_REG(hw, IXGBE_RT2SR(i));
+		for (i = 0; i < 8; i++)
+			regs_buff[849 + i] =
+				IXGBE_READ_REG(hw, IXGBE_TDTQ2TCCR(i));
+		for (i = 0; i < 8; i++)
+			regs_buff[857 + i] =
+				IXGBE_READ_REG(hw, IXGBE_TDTQ2TCSR(i));
+		break;
+	case ixgbe_mac_82599EB:
+	case ixgbe_mac_X540:
+	case ixgbe_mac_X550:
+	case ixgbe_mac_X550EM_x:
+		regs_buff[830] = IXGBE_READ_REG(hw, IXGBE_RTTDCS);
+		regs_buff[832] = IXGBE_READ_REG(hw, IXGBE_RTRPCS);
+		for (i = 0; i < 8; i++)
+			regs_buff[833 + i] =
+				IXGBE_READ_REG(hw, IXGBE_RTRPT4C(i));
+		for (i = 0; i < 8; i++)
+			regs_buff[841 + i] =
+				IXGBE_READ_REG(hw, IXGBE_RTRPT4S(i));
+		for (i = 0; i < 8; i++)
+			regs_buff[849 + i] =
+				IXGBE_READ_REG(hw, IXGBE_RTTDT2C(i));
+		for (i = 0; i < 8; i++)
+			regs_buff[857 + i] =
+				IXGBE_READ_REG(hw, IXGBE_RTTDT2S(i));
+		break;
+	default:
+		break;
+	}
+
 	for (i = 0; i < 8; i++)
 		regs_buff[865 + i] = IXGBE_READ_REG(hw, IXGBE_TDPT2TCCR(i));
 	for (i = 0; i < 8; i++)
@@ -1182,6 +1216,11 @@ static int ixgbe_link_test(struct ixgbe_adapter *adapter, u64 *data)
 	struct ixgbe_hw *hw = &adapter->hw;
 	bool link_up;
 	u32 link_speed = 0;
+
+	if (ixgbe_removed(hw->hw_addr)) {
+		*data = 1;
+		return 1;
+	}
 	*data = 0;
 
 	hw->mac.ops.check_link(hw, &link_speed, &link_up, true);
@@ -1277,6 +1316,10 @@ static bool reg_pattern_test(struct ixgbe_adapter *adapter, u64 *data, int reg,
 	static const u32 test_pattern[] = {
 		0x5A5A5A5A, 0xA5A5A5A5, 0x00000000, 0xFFFFFFFF};
 
+	if (ixgbe_removed(adapter->hw.hw_addr)) {
+		*data = 1;
+		return 1;
+	}
 	for (pat = 0; pat < ARRAY_SIZE(test_pattern); pat++) {
 		before = readl(adapter->hw.hw_addr + reg);
 		writel((test_pattern[pat] & write),
@@ -1299,9 +1342,14 @@ static bool reg_set_and_check(struct ixgbe_adapter *adapter, u64 *data, int reg,
 			      u32 mask, u32 write)
 {
 	u32 val, before;
-	before = readl(adapter->hw.hw_addr + reg);
-	writel((write & mask), (adapter->hw.hw_addr + reg));
-	val = readl(adapter->hw.hw_addr + reg);
+
+	if (ixgbe_removed(adapter->hw.hw_addr)) {
+		*data = 1;
+		return 1;
+	}
+	before = ixgbe_read_reg(&adapter->hw, reg);
+	ixgbe_write_reg(&adapter->hw, reg, write & mask);
+	val = ixgbe_read_reg(&adapter->hw, reg);
 	if ((write & mask) != (val & mask)) {
 		e_err(drv, "set/check reg %04X test failed: got 0x%08X "
 		      "expected 0x%08X\n", reg, (val & mask), (write & mask));
@@ -1332,6 +1380,11 @@ static int ixgbe_reg_test(struct ixgbe_adapter *adapter, u64 *data)
 	u32 value, before, after;
 	u32 i, toggle;
 
+	if (ixgbe_removed(adapter->hw.hw_addr)) {
+		e_err(drv, "Adapter removed - register test blocked\n");
+		*data = 1;
+		return 1;
+	}
 	switch (adapter->hw.mac.type) {
 	case ixgbe_mac_82598EB:
 		toggle = 0x7FFFF3FF;
@@ -1339,6 +1392,8 @@ static int ixgbe_reg_test(struct ixgbe_adapter *adapter, u64 *data)
 		break;
 	case ixgbe_mac_82599EB:
 	case ixgbe_mac_X540:
+	case ixgbe_mac_X550:
+	case ixgbe_mac_X550EM_x:
 		toggle = 0x7FFFF30F;
 		test = reg_test_82599;
 		break;
@@ -1569,6 +1624,8 @@ static void ixgbe_free_desc_rings(struct ixgbe_adapter *adapter)
 	switch (hw->mac.type) {
 	case ixgbe_mac_82599EB:
 	case ixgbe_mac_X540:
+	case ixgbe_mac_X550:
+	case ixgbe_mac_X550EM_x:
 		reg_ctl = IXGBE_READ_REG(hw, IXGBE_DMATXCTL);
 		reg_ctl &= ~IXGBE_DMATXCTL_TE;
 		IXGBE_WRITE_REG(hw, IXGBE_DMATXCTL, reg_ctl);
@@ -1605,6 +1662,8 @@ static int ixgbe_setup_desc_rings(struct ixgbe_adapter *adapter)
 	switch (adapter->hw.mac.type) {
 	case ixgbe_mac_82599EB:
 	case ixgbe_mac_X540:
+	case ixgbe_mac_X550:
+	case ixgbe_mac_X550EM_x:
 		reg_data = IXGBE_READ_REG(&adapter->hw, IXGBE_DMATXCTL);
 		reg_data |= IXGBE_DMATXCTL_TE;
 		IXGBE_WRITE_REG(&adapter->hw, IXGBE_DMATXCTL, reg_data);
@@ -1658,12 +1717,16 @@ static int ixgbe_setup_loopback_test(struct ixgbe_adapter *adapter)
 	reg_data |= IXGBE_FCTRL_BAM | IXGBE_FCTRL_SBP | IXGBE_FCTRL_MPE;
 	IXGBE_WRITE_REG(hw, IXGBE_FCTRL, reg_data);
 
-	/* X540 needs to set the MACC.FLU bit to force link up */
-	if (adapter->hw.mac.type == ixgbe_mac_X540) {
+	/* X540 and X550 needs to set the MACC.FLU bit to force link up */
+	switch (adapter->hw.mac.type) {
+	case ixgbe_mac_X540:
+	case ixgbe_mac_X550:
+	case ixgbe_mac_X550EM_x:
 		reg_data = IXGBE_READ_REG(hw, IXGBE_MACC);
 		reg_data |= IXGBE_MACC_FLU;
 		IXGBE_WRITE_REG(hw, IXGBE_MACC, reg_data);
-	} else {
+		break;
+	default:
 		if (hw->mac.orig_autoc) {
 			reg_data = hw->mac.orig_autoc | IXGBE_AUTOC_FLU;
 			IXGBE_WRITE_REG(hw, IXGBE_AUTOC, reg_data);
@@ -1884,6 +1947,16 @@ static void ixgbe_diag_test(struct net_device *netdev,
 	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 	bool if_running = netif_running(netdev);
 
+	if (ixgbe_removed(adapter->hw.hw_addr)) {
+		e_err(hw, "Adapter removed - test blocked\n");
+		data[0] = 1;
+		data[1] = 1;
+		data[2] = 1;
+		data[3] = 1;
+		data[4] = 1;
+		eth_test->flags |= ETH_TEST_FL_FAILED;
+		return;
+	}
 	set_bit(__IXGBE_TESTING, &adapter->state);
 	if (eth_test->flags == ETH_TEST_FL_OFFLINE) {
 		struct ixgbe_hw *hw = &adapter->hw;
@@ -1900,6 +1973,7 @@ static void ixgbe_diag_test(struct net_device *netdev,
 					data[1] = 1;
 					data[2] = 1;
 					data[3] = 1;
+					data[4] = 1;
 					eth_test->flags |= ETH_TEST_FL_FAILED;
 					clear_bit(__IXGBE_TESTING,
 						  &adapter->state);
@@ -2687,7 +2761,14 @@ static int ixgbe_set_rss_hash_opt(struct ixgbe_adapter *adapter,
 	/* if we changed something we need to update flags */
 	if (flags2 != adapter->flags2) {
 		struct ixgbe_hw *hw = &adapter->hw;
-		u32 mrqc = IXGBE_READ_REG(hw, IXGBE_MRQC);
+		u32 mrqc;
+		unsigned int pf_pool = adapter->num_vfs;
+
+		if ((hw->mac.type >= ixgbe_mac_X550) &&
+		    (adapter->flags & IXGBE_FLAG_SRIOV_ENABLED))
+			mrqc = IXGBE_READ_REG(hw, IXGBE_PFVFMRQC(pf_pool));
+		else
+			mrqc = IXGBE_READ_REG(hw, IXGBE_MRQC);
 
 		if ((flags2 & UDP_RSS_FLAGS) &&
 		    !(adapter->flags2 & UDP_RSS_FLAGS))
@@ -2711,7 +2792,11 @@ static int ixgbe_set_rss_hash_opt(struct ixgbe_adapter *adapter,
 		if (flags2 & IXGBE_FLAG2_RSS_FIELD_IPV6_UDP)
 			mrqc |= IXGBE_MRQC_RSS_FIELD_IPV6_UDP;
 
-		IXGBE_WRITE_REG(hw, IXGBE_MRQC, mrqc);
+		if ((hw->mac.type >= ixgbe_mac_X550) &&
+		    (adapter->flags & IXGBE_FLAG_SRIOV_ENABLED))
+			IXGBE_WRITE_REG(hw, IXGBE_PFVFMRQC(pf_pool), mrqc);
+		else
+			IXGBE_WRITE_REG(hw, IXGBE_MRQC, mrqc);
 	}
 
 	return 0;
@@ -2745,6 +2830,8 @@ static int ixgbe_get_ts_info(struct net_device *dev,
 	struct ixgbe_adapter *adapter = netdev_priv(dev);
 
 	switch (adapter->hw.mac.type) {
+	case ixgbe_mac_X550:
+	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X540:
 	case ixgbe_mac_82599EB:
 		info->so_timestamping =

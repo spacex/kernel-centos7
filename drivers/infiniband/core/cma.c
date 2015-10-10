@@ -2501,8 +2501,11 @@ static int cma_check_linklocal(struct rdma_dev_addr *dev_addr,
 		return 0;
 
 	sin6 = (struct sockaddr_in6 *) addr;
-	if ((ipv6_addr_type(&sin6->sin6_addr) & IPV6_ADDR_LINKLOCAL) &&
-	    !sin6->sin6_scope_id)
+
+	if (!(ipv6_addr_type(&sin6->sin6_addr) & IPV6_ADDR_LINKLOCAL))
+		return 0;
+
+	if (!sin6->sin6_scope_id)
 			return -EINVAL;
 
 	dev_addr->bound_dev_if = sin6->sin6_scope_id;
@@ -3604,7 +3607,8 @@ static int cma_get_id_stats(struct sk_buff *skb, struct netlink_callback *cb)
 
 			id_stats = ibnl_put_msg(skb, &nlh, cb->nlh->nlmsg_seq,
 						sizeof *id_stats, RDMA_NL_RDMA_CM,
-						RDMA_NL_RDMA_CM_ID_STATS);
+						RDMA_NL_RDMA_CM_ID_STATS,
+						NLM_F_MULTI);
 			if (!id_stats)
 				goto out;
 

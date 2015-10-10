@@ -250,9 +250,9 @@ xfs_initialize_perag(
 		mp->m_flags &= ~XFS_MOUNT_32BITINODES;
 
 	if (mp->m_flags & XFS_MOUNT_32BITINODES)
-		index = xfs_set_inode32(mp);
+		index = xfs_set_inode32(mp, agcount);
 	else
-		index = xfs_set_inode64(mp);
+		index = xfs_set_inode64(mp, agcount);
 
 	if (maxagi)
 		*maxagi = index;
@@ -323,8 +323,18 @@ reread:
 	/*
 	 * Initialize the mount structure from the superblock.
 	 */
-	xfs_sb_from_disk(&mp->m_sb, XFS_BUF_TO_SBP(bp));
-	xfs_sb_quota_from_disk(&mp->m_sb);
+	xfs_sb_from_disk(sbp, XFS_BUF_TO_SBP(bp));
+
+	/*
+	 * If we haven't validated the superblock, do so now before we try
+	 * to check the sector size and reread the superblock appropriately.
+	 */
+	if (sbp->sb_magicnum != XFS_SB_MAGIC) {
+		if (loud)
+			xfs_warn(mp, "Invalid superblock magic number");
+		error = EINVAL;
+		goto release_buf;
+	}
 
 	/*
 	 * We must be able to do sector-sized and sector-aligned IO.
@@ -337,11 +347,11 @@ reread:
 		goto release_buf;
 	}
 
-	/*
-	 * Re-read the superblock so the buffer is correctly sized,
-	 * and properly verified.
-	 */
 	if (buf_ops == NULL) {
+		/*
+		 * Re-read the superblock so the buffer is correctly sized,
+		 * and properly verified.
+		 */
 		xfs_buf_relse(bp);
 		sector_size = sbp->sb_sectsize;
 		buf_ops = loud ? &xfs_sb_buf_ops : &xfs_sb_quiet_buf_ops;
@@ -743,8 +753,6 @@ xfs_mountfs(
 		new_size *= mp->m_sb.sb_inodesize / XFS_DINODE_MIN_SIZE;
 		if (mp->m_sb.sb_inoalignmt >= XFS_B_TO_FSBT(mp, new_size))
 			mp->m_inode_cluster_size = new_size;
-		xfs_info(mp, "Using inode cluster size of %d bytes",
-			 mp->m_inode_cluster_size);
 	}
 
 	/*
@@ -841,7 +849,7 @@ xfs_mountfs(
 	     !mp->m_sb.sb_inprogress) {
 		error = xfs_initialize_perag_data(mp, sbp->sb_agcount);
 		if (error)
-			goto out_fail_wait;
+			goto out_log_dealloc;
 	}
 
 	/*
@@ -913,7 +921,7 @@ xfs_mountfs(
 			xfs_notice(mp, "resetting quota flags");
 			error = xfs_mount_reset_sbqflags(mp);
 			if (error)
-				return error;
+				goto out_rtunmount;
 		}
 	}
 

@@ -158,7 +158,7 @@ static int save_sigregs32(struct pt_regs *regs, _sigregs32 __user *sregs)
 
 	user_sregs.regs.psw.mask = (__u32)(regs->psw.mask >> 32);
 	user_sregs.regs.psw.mask &= PSW32_MASK_USER | PSW32_MASK_RI;
-	user_sregs.regs.psw.mask |= psw32_user_bits;
+	user_sregs.regs.psw.mask |= PSW32_USER_BITS;
 	user_sregs.regs.psw.addr = (__u32) regs->psw.addr |
 		(__u32)(regs->psw.mask & PSW_MASK_BA);
 	for (i = 0; i < NUM_GPRS; i++)
@@ -199,8 +199,8 @@ static int restore_sigregs32(struct pt_regs *regs,_sigregs32 __user *sregs)
 		(__u64)(user_sregs.regs.psw.mask & PSW32_MASK_RI) << 32 |
 		(__u64)(user_sregs.regs.psw.addr & PSW32_ADDR_AMODE);
 	/* Check for invalid user address space control. */
-	if ((regs->psw.mask & PSW_MASK_ASC) >= (psw_kernel_bits & PSW_MASK_ASC))
-		regs->psw.mask = (psw_user_bits & PSW_MASK_ASC) |
+	if ((regs->psw.mask & PSW_MASK_ASC) == PSW_ASC_HOME)
+		regs->psw.mask = PSW_ASC_PRIMARY |
 			(regs->psw.mask & ~PSW_MASK_ASC);
 	regs->psw.addr = (__u64)(user_sregs.regs.psw.addr & PSW32_ADDR_INSN);
 	for (i = 0; i < NUM_GPRS; i++)
@@ -357,7 +357,7 @@ static int setup_frame32(int sig, struct k_sigaction *ka,
 	regs->gprs[15] = (__force __u64) frame;
 	/* Force 31 bit amode and default user address space control. */
 	regs->psw.mask = PSW_MASK_BA |
-		(psw_user_bits & PSW_MASK_ASC) |
+		(PSW_USER_BITS & PSW_MASK_ASC) |
 		(regs->psw.mask & ~PSW_MASK_ASC);
 	regs->psw.addr = (__force __u64) ka->sa.sa_handler;
 
@@ -424,7 +424,7 @@ static int setup_rt_frame32(int sig, struct k_sigaction *ka, siginfo_t *info,
 	regs->gprs[15] = (__force __u64) frame;
 	/* Force 31 bit amode and default user address space control. */
 	regs->psw.mask = PSW_MASK_BA |
-		(psw_user_bits & PSW_MASK_ASC) |
+		(PSW_USER_BITS & PSW_MASK_ASC) |
 		(regs->psw.mask & ~PSW_MASK_ASC);
 	regs->psw.addr = (__u64) ka->sa.sa_handler;
 

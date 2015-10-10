@@ -22,15 +22,11 @@
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 
-#include <linux/device.h>
+#include <linux/acpi.h>
 #include <linux/export.h>
 #include <linux/mutex.h>
 #include <linux/pm_qos.h>
 #include <linux/pm_runtime.h>
-
-#include <acpi/acpi.h>
-#include <acpi/acpi_bus.h>
-#include <acpi/acpi_drivers.h>
 
 #include "internal.h"
 
@@ -159,7 +155,8 @@ int acpi_device_set_power(struct acpi_device *device, int state)
 	int result = 0;
 	bool cut_power = false;
 
-	if (!device || (state < ACPI_STATE_D0) || (state > ACPI_STATE_D3_COLD))
+	if (!device || !device->flags.power_manageable
+	    || (state < ACPI_STATE_D0) || (state > ACPI_STATE_D3_COLD))
 		return -EINVAL;
 
 	/* Make sure this is a valid target state */
@@ -264,6 +261,8 @@ int acpi_bus_init_power(struct acpi_device *device)
 		return -EINVAL;
 
 	device->power.state = ACPI_STATE_UNKNOWN;
+	if (!acpi_device_is_present(device))
+		return 0;
 
 	result = acpi_device_get_power(device, &state);
 	if (result)
@@ -310,15 +309,18 @@ int acpi_device_fix_up_power(struct acpi_device *device)
 	return ret;
 }
 
-int acpi_bus_update_power(acpi_handle handle, int *state_p)
+int acpi_device_update_power(struct acpi_device *device, int *state_p)
 {
-	struct acpi_device *device;
 	int state;
 	int result;
 
-	result = acpi_bus_get_device(handle, &device);
-	if (result)
+	if (device->power.state == ACPI_STATE_UNKNOWN) {
+		result = acpi_bus_init_power(device);
+		if (!result && state_p)
+			*state_p = device->power.state;
+
 		return result;
+	}
 
 	result = acpi_device_get_power(device, &state);
 	if (result)
@@ -345,6 +347,15 @@ int acpi_bus_update_power(acpi_handle handle, int *state_p)
 		*state_p = state;
 
 	return 0;
+}
+
+int acpi_bus_update_power(acpi_handle handle, int *state_p)
+{
+	struct acpi_device *device;
+	int result;
+
+	result = acpi_bus_get_device(handle, &device);
+	return result ? result : acpi_device_update_power(device, state_p);
 }
 EXPORT_SYMBOL_GPL(acpi_bus_update_power);
 
@@ -1031,60 +1042,4 @@ void acpi_dev_pm_detach(struct device *dev, bool power_off)
 	}
 }
 EXPORT_SYMBOL_GPL(acpi_dev_pm_detach);
-
-/**
- * acpi_dev_pm_add_dependent - Add physical device depending for PM.
- * @handle: Handle of ACPI device node.
- * @depdev: Device depending on that node for PM.
- */
-void acpi_dev_pm_add_dependent(acpi_handle handle, struct device *depdev)
-{
-	struct acpi_device_physical_node *dep;
-	struct acpi_device *adev;
-
-	if (!depdev || acpi_bus_get_device(handle, &adev))
-		return;
-
-	mutex_lock(&adev->physical_node_lock);
-
-	list_for_each_entry(dep, &adev->power_dependent, node)
-		if (dep->dev == depdev)
-			goto out;
-
-	dep = kzalloc(sizeof(*dep), GFP_KERNEL);
-	if (dep) {
-		dep->dev = depdev;
-		list_add_tail(&dep->node, &adev->power_dependent);
-	}
-
- out:
-	mutex_unlock(&adev->physical_node_lock);
-}
-EXPORT_SYMBOL_GPL(acpi_dev_pm_add_dependent);
-
-/**
- * acpi_dev_pm_remove_dependent - Remove physical device depending for PM.
- * @handle: Handle of ACPI device node.
- * @depdev: Device depending on that node for PM.
- */
-void acpi_dev_pm_remove_dependent(acpi_handle handle, struct device *depdev)
-{
-	struct acpi_device_physical_node *dep;
-	struct acpi_device *adev;
-
-	if (!depdev || acpi_bus_get_device(handle, &adev))
-		return;
-
-	mutex_lock(&adev->physical_node_lock);
-
-	list_for_each_entry(dep, &adev->power_dependent, node)
-		if (dep->dev == depdev) {
-			list_del(&dep->node);
-			kfree(dep);
-			break;
-		}
-
-	mutex_unlock(&adev->physical_node_lock);
-}
-EXPORT_SYMBOL_GPL(acpi_dev_pm_remove_dependent);
 #endif /* CONFIG_PM */

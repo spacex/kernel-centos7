@@ -18,6 +18,8 @@
 #include <net/ip6_route.h>
 #endif
 
+#include <linux/rh_kabi.h>
+
 /* Keep error state on tunnel for 30 sec */
 #define IPTUNNEL_ERR_TIMEO	(30*HZ)
 
@@ -66,14 +68,14 @@ struct ip_tunnel {
 	struct gro_cells	gro_cells;
 
 	/* Reserved slots. For Red Hat usage only. */
-	unsigned long rh_reserved1;
-	unsigned long rh_reserved2;
-	unsigned long rh_reserved3;
-	unsigned long rh_reserved4;
-	unsigned long rh_reserved5;
-	unsigned long rh_reserved6;
-	unsigned long rh_reserved7;
-	unsigned long rh_reserved8;
+	RH_KABI_RESERVE(1)
+	RH_KABI_RESERVE(2)
+	RH_KABI_RESERVE(3)
+	RH_KABI_RESERVE(4)
+	RH_KABI_RESERVE(5)
+	RH_KABI_RESERVE(6)
+	RH_KABI_RESERVE(7)
+	RH_KABI_RESERVE(8)
 };
 
 #define TUNNEL_CSUM	__cpu_to_be16(0x01)
@@ -112,7 +114,7 @@ void  ip_tunnel_dellink(struct net_device *dev, struct list_head *head);
 int ip_tunnel_init_net(struct net *net, int ip_tnl_net_id,
 		       struct rtnl_link_ops *ops, char *devname);
 
-void ip_tunnel_delete_net(struct ip_tunnel_net *itn);
+void ip_tunnel_delete_net(struct ip_tunnel_net *itn, struct rtnl_link_ops *ops);
 
 void ip_tunnel_xmit(struct sk_buff *skb, struct net_device *dev,
 		    const struct iphdr *tnl_params, const u8 protocol);
@@ -156,8 +158,7 @@ static inline u8 ip_tunnel_ecn_encap(u8 tos, const struct iphdr *iph,
 }
 
 int iptunnel_pull_header(struct sk_buff *skb, int hdr_len, __be16 inner_proto);
-int iptunnel_xmit(struct net *net, struct rtable *rt,
-		  struct sk_buff *skb,
+int iptunnel_xmit(struct sock *sk, struct rtable *rt, struct sk_buff *skb,
 		  __be32 src, __be32 dst, __u8 proto,
 		  __u8 tos, __u8 ttl, __be16 df);
 

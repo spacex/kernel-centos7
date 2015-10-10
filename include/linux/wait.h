@@ -173,6 +173,43 @@ wait_queue_head_t *bit_waitqueue(void *, int);
 #define wake_up_interruptible_sync_poll(x, m)				\
 	__wake_up_sync_key((x), TASK_INTERRUPTIBLE, 1, (void *) (m))
 
+#define ___wait_signal_pending(state)					\
+	((state == TASK_INTERRUPTIBLE && signal_pending(current)) ||	\
+	 (state == TASK_KILLABLE && fatal_signal_pending(current)))
+
+#define ___wait_nop_ret		int ret __always_unused
+
+#define ___wait_event(wq, condition, state, exclusive, ret, cmd)	\
+({									\
+	__label__ __out;						\
+	long __ret = ret;						\
+	DEFINE_WAIT(__wait);						\
+									\
+	for (;;) {							\
+		if (exclusive)						\
+			prepare_to_wait_exclusive(&wq, &__wait, state); \
+		else							\
+			prepare_to_wait(&wq, &__wait, state);		\
+									\
+		if (condition)						\
+			break;						\
+									\
+		if (___wait_signal_pending(state)) {			\
+			__ret = -ERESTARTSYS;				\
+			if (exclusive) {				\
+				abort_exclusive_wait(&wq, &__wait, 	\
+						     state, NULL); 	\
+				goto __out;				\
+			}						\
+			break;						\
+		}							\
+									\
+		cmd;							\
+	}								\
+	finish_wait(&wq, &__wait);					\
+__out: __ret;								\
+})
+
 #define __wait_event(wq, condition) 					\
 do {									\
 	DEFINE_WAIT(__wait);						\
@@ -263,6 +300,31 @@ do {									\
 		break;							\
 	}								\
 	finish_wait(&wq, &__wait);					\
+} while (0)
+
+#define __wait_event_cmd(wq, condition, cmd1, cmd2)			\
+	(void)___wait_event(wq, condition, TASK_UNINTERRUPTIBLE, 0, 0,	\
+			    cmd1; schedule(); cmd2)
+
+/**
+ * wait_event_cmd - sleep until a condition gets true
+ * @wq: the waitqueue to wait on
+ * @condition: a C expression for the event to wait for
+ * cmd1: the command will be executed before sleep
+ * cmd2: the command will be executed after sleep
+ *
+ * The process is put to sleep (TASK_UNINTERRUPTIBLE) until the
+ * @condition evaluates to true. The @condition is checked each time
+ * the waitqueue @wq is woken up.
+ *
+ * wake_up() has to be called after changing any variable that could
+ * change the result of the wait condition.
+ */
+#define wait_event_cmd(wq, condition, cmd1, cmd2)			\
+do {									\
+	if (condition)							\
+		break;							\
+	__wait_event_cmd(wq, condition, cmd1, cmd2);			\
 } while (0)
 
 /**

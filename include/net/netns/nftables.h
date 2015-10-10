@@ -14,10 +14,15 @@ struct netns_nftables {
 	struct nft_af_info	*arp;
 	struct nft_af_info	*bridge;
 	u8			gencursor;
-	u8			genctr;
+	u8			genctr; /* unused but we cannot remove, due to kABI */
+#ifndef __GENKSYMS__
+	unsigned int		base_seq;
 
 	/* Reserved for use in the future RHEL versions. */
+	unsigned int		__rht_reserved1;
+#else
 	unsigned long		__rht_reserved1;
+#endif
 	unsigned long		__rht_reserved2;
 	unsigned long		__rht_reserved3;
 	unsigned long		__rht_reserved4;

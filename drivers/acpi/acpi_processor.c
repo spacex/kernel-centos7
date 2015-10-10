@@ -342,7 +342,7 @@ static int acpi_processor_get_info(struct acpi_device *device)
  */
 static DEFINE_PER_CPU(void *, processor_device_array);
 
-static int __cpuinit acpi_processor_add(struct acpi_device *device,
+static int acpi_processor_add(struct acpi_device *device,
 					const struct acpi_device_id *id)
 {
 	struct acpi_processor *pr;
@@ -400,7 +400,7 @@ static int __cpuinit acpi_processor_add(struct acpi_device *device,
 		goto err;
 	}
 
-	result = acpi_bind_one(dev, pr->handle);
+	result = acpi_bind_one(dev, device);
 	if (result)
 		goto err;
 

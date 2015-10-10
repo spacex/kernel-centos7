@@ -88,29 +88,14 @@ static int pseries_eeh_init(void)
 	 * and its variant since the old firmware probably support address
 	 * of domain/bus/slot/function for EEH RTAS operations.
 	 */
-	if (ibm_set_eeh_option == RTAS_UNKNOWN_SERVICE) {
-		pr_warning("%s: RTAS service <ibm,set-eeh-option> invalid\n",
-			__func__);
-		return -EINVAL;
-	} else if (ibm_set_slot_reset == RTAS_UNKNOWN_SERVICE) {
-		pr_warning("%s: RTAS service <ibm,set-slot-reset> invalid\n",
-			__func__);
-		return -EINVAL;
-	} else if (ibm_read_slot_reset_state2 == RTAS_UNKNOWN_SERVICE &&
-		   ibm_read_slot_reset_state == RTAS_UNKNOWN_SERVICE) {
-		pr_warning("%s: RTAS service <ibm,read-slot-reset-state2> and "
-			"<ibm,read-slot-reset-state> invalid\n",
-			__func__);
-		return -EINVAL;
-	} else if (ibm_slot_error_detail == RTAS_UNKNOWN_SERVICE) {
-		pr_warning("%s: RTAS service <ibm,slot-error-detail> invalid\n",
-			__func__);
-		return -EINVAL;
-	} else if (ibm_configure_pe == RTAS_UNKNOWN_SERVICE &&
-		   ibm_configure_bridge == RTAS_UNKNOWN_SERVICE) {
-		pr_warning("%s: RTAS service <ibm,configure-pe> and "
-			"<ibm,configure-bridge> invalid\n",
-			__func__);
+	if (ibm_set_eeh_option == RTAS_UNKNOWN_SERVICE		||
+	    ibm_set_slot_reset == RTAS_UNKNOWN_SERVICE		||
+	    (ibm_read_slot_reset_state2 == RTAS_UNKNOWN_SERVICE &&
+	     ibm_read_slot_reset_state == RTAS_UNKNOWN_SERVICE)	||
+	    ibm_slot_error_detail == RTAS_UNKNOWN_SERVICE	||
+	    (ibm_configure_pe == RTAS_UNKNOWN_SERVICE		&&
+	     ibm_configure_bridge == RTAS_UNKNOWN_SERVICE)) {
+		pr_info("EEH functionality not supported\n");
 		return -EINVAL;
 	}
 
@@ -118,11 +103,11 @@ static int pseries_eeh_init(void)
 	spin_lock_init(&slot_errbuf_lock);
 	eeh_error_buf_size = rtas_token("rtas-error-log-max");
 	if (eeh_error_buf_size == RTAS_UNKNOWN_SERVICE) {
-		pr_warning("%s: unknown EEH error log size\n",
+		pr_info("%s: unknown EEH error log size\n",
 			__func__);
 		eeh_error_buf_size = 1024;
 	} else if (eeh_error_buf_size > RTAS_ERROR_LOG_MAX) {
-		pr_warning("%s: EEH error log size %d exceeds the maximal %d\n",
+		pr_info("%s: EEH error log size %d exceeds the maximal %d\n",
 			__func__, eeh_error_buf_size, RTAS_ERROR_LOG_MAX);
 		eeh_error_buf_size = RTAS_ERROR_LOG_MAX;
 	}
@@ -175,6 +160,36 @@ static int pseries_eeh_find_cap(struct device_node *dn, int cap)
 	return 0;
 }
 
+static int pseries_eeh_find_ecap(struct device_node *dn, int cap)
+{
+	struct pci_dn *pdn = PCI_DN(dn);
+	struct eeh_dev *edev = of_node_to_eeh_dev(dn);
+	u32 header;
+	int pos = 256;
+	int ttl = (4096 - 256) / 8;
+
+	if (!edev || !edev->pcie_cap)
+		return 0;
+	if (rtas_read_config(pdn, pos, 4, &header) != PCIBIOS_SUCCESSFUL)
+		return 0;
+	else if (!header)
+		return 0;
+
+	while (ttl-- > 0) {
+		if (PCI_EXT_CAP_ID(header) == cap && pos)
+			return pos;
+
+		pos = PCI_EXT_CAP_NEXT(header);
+		if (pos < 256)
+			break;
+
+		if (rtas_read_config(pdn, pos, 4, &header) != PCIBIOS_SUCCESSFUL)
+			break;
+	}
+
+	return 0;
+}
+
 /**
  * pseries_eeh_of_probe - EEH probe on the given device
  * @dn: OF node
@@ -220,7 +235,9 @@ static void *pseries_eeh_of_probe(struct device_node *dn, void *flag)
 	 * or PCIe switch downstream port.
 	 */
 	edev->class_code = class_code;
+	edev->pcix_cap = pseries_eeh_find_cap(dn, PCI_CAP_ID_PCIX);
 	edev->pcie_cap = pseries_eeh_find_cap(dn, PCI_CAP_ID_EXP);
+	edev->aer_cap = pseries_eeh_find_ecap(dn, PCI_EXT_CAP_ID_ERR);
 	edev->mode &= 0xFFFFFF00;
 	if ((edev->class_code >> 8) == PCI_CLASS_BRIDGE_PCI) {
 		edev->mode |= EEH_DEV_BRIDGE;
@@ -265,7 +282,7 @@ static void *pseries_eeh_of_probe(struct device_node *dn, void *flag)
 			enable = 1;
 
 		if (enable) {
-			eeh_subsystem_enabled = 1;
+			eeh_set_enable(true);
 			eeh_add_to_parent_pe(edev);
 
 			pr_debug("%s: EEH enabled on %s PHB#%d-PE#%x, config addr#%x\n",
@@ -464,6 +481,7 @@ static int pseries_eeh_get_state(struct eeh_pe *pe, int *state)
 			} else {
 				result = EEH_STATE_NOT_SUPPORT;
 			}
+			break;
 		default:
 			result = EEH_STATE_NOT_SUPPORT;
 		}
@@ -499,10 +517,18 @@ static int pseries_eeh_reset(struct eeh_pe *pe, int option)
 	/* If fundamental-reset not supported, try hot-reset */
 	if (option == EEH_RESET_FUNDAMENTAL &&
 	    ret == -8) {
+		option = EEH_RESET_HOT;
 		ret = rtas_call(ibm_set_slot_reset, 4, 1, NULL,
 				config_addr, BUID_HI(pe->phb->buid),
-				BUID_LO(pe->phb->buid), EEH_RESET_HOT);
+				BUID_LO(pe->phb->buid), option);
 	}
+
+	/* We need reset hold or settlement delay */
+	if (option == EEH_RESET_FUNDAMENTAL ||
+	    option == EEH_RESET_HOT)
+		msleep(EEH_PE_RST_HOLD_TIME);
+	else
+		msleep(EEH_PE_RST_SETTLE_TIME);
 
 	return ret;
 }
@@ -689,7 +715,9 @@ static struct eeh_ops pseries_eeh_ops = {
 	.get_log		= pseries_eeh_get_log,
 	.configure_bridge       = pseries_eeh_configure_bridge,
 	.read_config		= pseries_eeh_read_config,
-	.write_config		= pseries_eeh_write_config
+	.write_config		= pseries_eeh_write_config,
+	.next_error		= NULL,
+	.restore_config		= NULL
 };
 
 /**

@@ -19,6 +19,8 @@
 #include <linux/atomic.h>
 #include <asm/page.h>
 
+#include <linux/rh_kabi.h>
+
 /* Free memory management - zoned buddy allocator.  */
 #ifndef CONFIG_FORCE_MAX_ZONEORDER
 #define MAX_ORDER 11
@@ -481,10 +483,16 @@ struct zone {
 	 * frequently read in proximity to zone->lock.  It's good to
 	 * give them a chance of being in the same cacheline.
 	 *
-	 * Write access to present_pages and managed_pages at runtime should
-	 * be protected by lock_memory_hotplug()/unlock_memory_hotplug().
-	 * Any reader who can't tolerant drift of present_pages and
-	 * managed_pages should hold memory hotplug lock to get a stable value.
+	 * Write access to present_pages at runtime should be protected by
+	 * lock_memory_hotplug()/unlock_memory_hotplug().  Any reader who can't
+	 * tolerant drift of present_pages should hold memory hotplug lock to
+	 * get a stable value.
+	 *
+	 * Read access to managed_pages should be safe because it's unsigned
+	 * long. Write access to zone->managed_pages and totalram_pages are
+	 * protected by managed_page_count_lock at runtime. Idealy only
+	 * adjust_managed_page_count() should be used instead of directly
+	 * touching zone->managed_pages and totalram_pages.
 	 */
 	unsigned long		spanned_pages;
 	unsigned long		present_pages;
@@ -502,14 +510,14 @@ struct zone {
 	const char		*name;
 
 	/* reserved for Red Hat */
-	unsigned long rh_reserved1;
-	unsigned long rh_reserved2;
-	unsigned long rh_reserved3;
-	unsigned long rh_reserved4;
-	unsigned long rh_reserved5;
-	unsigned long rh_reserved6;
-	unsigned long rh_reserved7;
-	unsigned long rh_reserved8;
+	RH_KABI_RESERVE(1)
+	RH_KABI_RESERVE(2)
+	RH_KABI_RESERVE(3)
+	RH_KABI_RESERVE(4)
+	RH_KABI_RESERVE(5)
+	RH_KABI_RESERVE(6)
+	RH_KABI_RESERVE(7)
+	RH_KABI_RESERVE(8)
 
 } ____cacheline_internodealigned_in_smp;
 
@@ -784,10 +792,10 @@ typedef struct pglist_data {
 #endif
 
 	/* reserved for Red Hat */
-	unsigned long rh_reserved1;
-	unsigned long rh_reserved2;
-	unsigned long rh_reserved3;
-	unsigned long rh_reserved4;
+	RH_KABI_RESERVE(1)
+	RH_KABI_RESERVE(2)
+	RH_KABI_RESERVE(3)
+	RH_KABI_RESERVE(4)
 
 } pg_data_t;
 

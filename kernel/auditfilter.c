@@ -1216,12 +1216,14 @@ static int audit_filter_user_rules(struct audit_krule *rule, int type,
 
 	for (i = 0; i < rule->field_count; i++) {
 		struct audit_field *f = &rule->fields[i];
+		pid_t pid;
 		int result = 0;
 		u32 sid;
 
 		switch (f->type) {
 		case AUDIT_PID:
-			result = audit_comparator(task_pid_vnr(current), f->op, f->val);
+			pid = task_pid_nr(current);
+			result = audit_comparator(pid, f->op, f->val);
 			break;
 		case AUDIT_UID:
 			result = audit_uid_comparator(current_uid(), f->op, f->uid);

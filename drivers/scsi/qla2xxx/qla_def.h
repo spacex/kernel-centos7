@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2013 QLogic Corporation
+ * Copyright (c)  2003-2014 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -808,7 +808,7 @@ struct mbx_cmd_32 {
 					   Notification */
 #define MBA_FW_POLL_STATE	0x8600  /* Firmware in poll diagnostic state */
 #define MBA_FW_RESET_FCT	0x8502	/* Firmware reset factory defaults */
-
+#define MBA_FW_INIT_INPROGRESS	0x8500	/* Firmware boot in progress */
 /* 83XX FCoE specific */
 #define MBA_IDC_AEN		0x8200  /* FCoE: NIC Core state change AEN */
 
@@ -862,7 +862,6 @@ struct mbx_cmd_32 {
  */
 #define MBC_LOAD_RAM			1	/* Load RAM. */
 #define MBC_EXECUTE_FIRMWARE		2	/* Execute firmware. */
-#define MBC_WRITE_RAM_WORD		4	/* Write RAM word. */
 #define MBC_READ_RAM_WORD		5	/* Read RAM word. */
 #define MBC_MAILBOX_REGISTER_TEST	6	/* Wrap incoming mailboxes */
 #define MBC_VERIFY_CHECKSUM		7	/* Verify checksum. */
@@ -937,6 +936,8 @@ struct mbx_cmd_32 {
 /*
  * ISP24xx mailbox commands
  */
+#define MBC_WRITE_SERDES		0x3	/* Write serdes word. */
+#define MBC_READ_SERDES			0x4	/* Read serdes word. */
 #define MBC_SERDES_PARAMS		0x10	/* Serdes Tx Parameters. */
 #define MBC_GET_IOCB_STATUS		0x12	/* Get IOCB status command. */
 #define MBC_PORT_PARAMS			0x1A	/* Port iDMA Parameters. */
@@ -962,6 +963,13 @@ struct mbx_cmd_32 {
  * ISP81xx mailbox commands
  */
 #define MBC_WRITE_MPI_REGISTER		0x01    /* Write MPI Register. */
+
+/*
+ * ISP8044 mailbox commands
+ */
+#define MBC_SET_GET_ETH_SERDES_REG	0x150
+#define HCS_WRITE_SERDES		0x3
+#define HCS_READ_SERDES			0x4
 
 /* Firmware return data sizes */
 #define FCAL_MAP_SIZE	128
@@ -1195,30 +1203,6 @@ typedef struct {
 
 	uint8_t  reserved_3[26];
 } init_cb_t;
-
-
-struct init_cb_fx {
-	uint16_t	version;
-	uint16_t	reserved_1[13];
-	__le16		request_q_outpointer;
-	__le16		response_q_inpointer;
-	uint16_t	reserved_2[2];
-	__le16		response_q_length;
-	__le16		request_q_length;
-	uint16_t	reserved_3[2];
-	__le32		request_q_address[2];
-	__le32		response_q_address[2];
-	uint16_t	reserved_4[4];
-	uint8_t		response_q_msivec;
-	uint8_t		reserved_5[19];
-	uint16_t	interrupt_delay_timer;
-	uint16_t	reserved_6;
-	uint32_t	fwoptions1;
-	uint32_t	fwoptions2;
-	uint32_t	fwoptions3;
-	uint8_t		reserved_7[24];
-};
-
 
 /*
  * Get Link Status mailbox command return buffer.
@@ -2994,8 +2978,7 @@ struct qla_hw_data {
 				IS_QLA82XX(ha) || IS_QLA83XX(ha) || \
 				IS_QLA8044(ha))
 #define IS_MSIX_NACK_CAPABLE(ha) (IS_QLA81XX(ha) || IS_QLA83XX(ha))
-#define IS_NOPOLLING_TYPE(ha)	((IS_QLA25XX(ha) || IS_QLA81XX(ha) || \
-			IS_QLA83XX(ha)) && (ha)->flags.msix_enabled)
+#define IS_NOPOLLING_TYPE(ha)	(IS_QLA81XX(ha) && (ha)->flags.msix_enabled)
 #define IS_FAC_REQUIRED(ha)	(IS_QLA81XX(ha) || IS_QLA83XX(ha))
 #define IS_NOCACHE_VPD_TYPE(ha)	(IS_QLA81XX(ha) || IS_QLA83XX(ha))
 #define IS_ALOGIO_CAPABLE(ha)	(IS_QLA23XX(ha) || IS_FWI2_CAPABLE(ha))
@@ -3144,7 +3127,15 @@ struct qla_hw_data {
 	struct qla2xxx_fw_dump *fw_dump;
 	uint32_t	fw_dump_len;
 	int		fw_dumped;
+	unsigned long	fw_dump_cap_flags;
+#define RISC_PAUSE_CMPL		0
+#define DMA_SHUTDOWN_CMPL	1
+#define ISP_RESET_CMPL		2
+#define RISC_RDY_AFT_RESET	3
+#define RISC_SRAM_DUMP_CMPL	4
+#define RISC_EXT_MEM_DUMP_CMPL	5
 	int		fw_dump_reading;
+	int		prev_minidump_failed;
 	dma_addr_t	eft_dma;
 	void		*eft;
 /* Current size of mctp dump is 0x086064 bytes */
@@ -3182,6 +3173,7 @@ struct qla_hw_data {
 #define QLA_SWRITING	2
 	uint32_t	optrom_region_start;
 	uint32_t	optrom_region_size;
+	struct mutex	optrom_mutex;
 
 /* PCI expansion ROM image information. */
 #define ROM_CODE_TYPE_BIOS	0
@@ -3307,6 +3299,7 @@ struct qla_hw_data {
 	struct mr_data_fx00 mr;
 
 	struct qlt_hw_data tgt;
+	int	allow_cna_fw_dump;
 };
 
 /*
@@ -3371,6 +3364,7 @@ typedef struct scsi_qla_host {
 #define FX00_RESET_RECOVERY	23
 #define FX00_TARGET_SCAN	24
 #define FX00_CRITEMP_RECOVERY	25
+#define FX00_HOST_INFO_RESEND	26
 
 	uint32_t	device_flags;
 #define SWITCH_FOUND		BIT_0

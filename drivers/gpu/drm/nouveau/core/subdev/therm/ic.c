@@ -41,7 +41,8 @@ probe_monitoring_device(struct nouveau_i2c_port *i2c,
 	if (!client)
 		return false;
 
-	if (!client->driver || client->driver->detect(client, info)) {
+	if (!client->dev.driver ||
+	    to_i2c_driver(client->dev.driver)->detect(client, info)) {
 		i2c_unregister_device(client);
 		return false;
 	}
@@ -59,9 +60,9 @@ static struct nouveau_i2c_board_info
 nv_board_infos[] = {
 	{ { I2C_BOARD_INFO("w83l785ts", 0x2d) }, 0 },
 	{ { I2C_BOARD_INFO("w83781d", 0x2d) }, 0  },
-	{ { I2C_BOARD_INFO("adt7473", 0x2e) }, 20  },
-	{ { I2C_BOARD_INFO("adt7473", 0x2d) }, 20  },
-	{ { I2C_BOARD_INFO("adt7473", 0x2c) }, 20  },
+	{ { I2C_BOARD_INFO("adt7473", 0x2e) }, 40  },
+	{ { I2C_BOARD_INFO("adt7473", 0x2d) }, 40  },
+	{ { I2C_BOARD_INFO("adt7473", 0x2c) }, 40  },
 	{ { I2C_BOARD_INFO("f75375", 0x2e) }, 0  },
 	{ { I2C_BOARD_INFO("lm99", 0x4c) }, 0  },
 	{ { I2C_BOARD_INFO("lm90", 0x4c) }, 0  },

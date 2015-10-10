@@ -694,6 +694,7 @@ void iscsit_release_cmd(struct iscsi_cmd *cmd)
 	kfree(cmd->seq_list);
 	kfree(cmd->tmr_req);
 	kfree(cmd->iov_data);
+	kfree(cmd->text_in_ptr);
 
 	kmem_cache_free(lio_cmd_cache, cmd);
 }
@@ -1287,6 +1288,8 @@ int iscsit_tx_login_rsp(struct iscsi_conn *conn, u8 status_class, u8 status_deta
 
 	login->login_failed = 1;
 	iscsit_collect_login_stats(conn, status_class, status_detail);
+
+	memset(&login->rsp[0], 0, ISCSI_HDR_LEN);
 
 	hdr	= (struct iscsi_login_rsp *)&login->rsp[0];
 	hdr->opcode		= ISCSI_OP_LOGIN_RSP;

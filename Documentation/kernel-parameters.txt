@@ -458,6 +458,11 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			possible to determine what the correct size should be.
 			This option provides an override for these situations.
 
+	ca_keys=	[KEYS] This parameter identifies a specific key(s) on
+			the system trusted keyring to be used for certificate
+			trust validation.
+			format: { id:<keyid> | builtin }
+
 	ccw_timeout_log [S390]
 			See Documentation/s390/CommonIO for details.
 
@@ -804,6 +809,7 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	earlyprintk=	[X86,SH,BLACKFIN,ARM]
 			earlyprintk=vga
+			earlyprintk=efi
 			earlyprintk=xen
 			earlyprintk=serial[,ttySn[,baudrate]]
 			earlyprintk=serial[,0x...[,baudrate]]
@@ -817,7 +823,8 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			Append ",keep" to not disable it when the real console
 			takes over.
 
-			Only vga or serial or usb debug port at a time.
+			Only one of vga, efi, serial, or usb debug port can
+			be used at a time.
 
 			Currently only ttyS0 and ttyS1 may be specified by
 			name.  Other I/O ports may be explicitly specified
@@ -831,10 +838,18 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			Interaction with the standard serial driver is not
 			very good.
 
-			The VGA output is eventually overwritten by the real
-			console.
+			The VGA and EFI output is eventually overwritten by
+			the real console.
 
 			The xen output can only be used by Xen PV guests.
+
+	edac_report=	[HW,EDAC] Control how to report EDAC event
+			Format: {"on" | "off" | "force"}
+			on: enable EDAC to report H/W event. May be overridden
+			by other higher priority error reporting module.
+			off: disable H/W event reporting through EDAC.
+			force: enforce the use of EDAC to report H/W event.
+			default: on.
 
 	ekgdboc=	[X86,KGDB] Allow early kernel console debugging
 			ekgdboc=kbd
@@ -844,6 +859,12 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	edd=		[EDD]
 			Format: {"off" | "on" | "skip[mbr]"}
+
+	efi=		[EFI]
+			Format: { "old_map" }
+			old_map [X86-64]: switch to the old ioremap-based EFI
+			runtime services mapping. 32-bit still uses this one by
+			default.
 
 	efi_no_storage_paranoia [EFI; X86]
 			Using this parameter you can use more than 50% of
@@ -1170,6 +1191,10 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 	initcall_debug	[KNL] Trace initcalls as they are executed.  Useful
 			for working out where the kernel is dying during
 			startup.
+
+	initcall_blacklist=  [KNL] Do not execute a comma-separated list of
+			initcall functions.  Useful for debugging built-in
+			modules and initcalls.
 
 	initrd=		[BOOT] Specify the location of the initial ramdisk
 
@@ -1734,6 +1759,9 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			that the amount of memory usable for all allocations
 			is not too small.
 
+	movable_node	[KNL,X86] Boot-time switch to enable the effects
+			of CONFIG_MOVABLE_NODE=y. See mm/Kconfig for details.
+
 	MTD_Partition=	[MTD]
 			Format: <name>,<region-number>,<size>,<offset>
 
@@ -2192,6 +2220,9 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			timeout = 0: wait forever
 			timeout < 0: reboot immediately
 			Format: <timeout>
+
+	panic_on_warn	panic() instead of WARN().  Useful to cause kdump
+			on a WARN().
 
 	parkbd.port=	[HW] Parallel port number the keyboard adapter is
 			connected to, default is 0.
@@ -2788,6 +2819,13 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	S		[KNL] Run init in single mode
 
+	s390_iommu=	[HW,S390]
+			Set s390 IOTLB flushing mode
+		strict
+			With strict flushing every unmap operation will result in
+			an IOTLB flush. Default is lazy flushing before reuse,
+			which is faster.
+
 	sa1100ir	[NET]
 			See drivers/net/irda/sa1100_ir.c.
 
@@ -3065,6 +3103,12 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			The scheduler will make use of this information and
 			e.g. base its process migration decisions on it.
 			Default is on.
+
+	topology_updates= [KNL, PPC, NUMA]
+			Format: {off}
+			Specify if the kernel should ignore (off)
+			topology updates sent by the hypervisor to this
+			LPAR.
 
 	tp720=		[HW,PS2]
 

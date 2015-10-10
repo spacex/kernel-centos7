@@ -15,12 +15,35 @@ ip_default_ttl - INTEGER
 	forwarded) IP packets. Should be between 1 and 255 inclusive.
 	Default: 64 (as recommended by RFC1700)
 
-ip_no_pmtu_disc - BOOLEAN
-	Disable Path MTU Discovery.
-	default FALSE
+ip_no_pmtu_disc - INTEGER
+	Disable Path MTU Discovery. If enabled in mode 1 and a
+	fragmentation-required ICMP is received, the PMTU to this
+	destination will be set to min_pmtu (see below). You will need
+	to raise min_pmtu to the smallest interface MTU on your system
+	manually if you want to avoid locally generated fragments.
+
+	In mode 2 incoming Path MTU Discovery messages will be
+	discarded. Outgoing frames are handled the same as in mode 1,
+	implicitly setting IP_PMTUDISC_DONT on every created socket.
+
+	Possible values: 0-2
+	Default: FALSE
 
 min_pmtu - INTEGER
 	default 552 - minimum discovered Path MTU
+
+ip_forward_use_pmtu - BOOLEAN
+	By default we don't trust protocol path MTUs while forwarding
+	because they could be easily forged and can lead to unwanted
+	fragmentation by the router.
+	You only need to enable this if you have user-space software
+	which tries to discover path mtus by itself and depends on the
+	kernel honoring this information. This is normally not the
+	case.
+	Default: 0 (disabled)
+	Possible values:
+	0 - disabled
+	1 - enabled
 
 route/max_size - INTEGER
 	Maximum number of routes allowed in the kernel.  Increase
@@ -440,6 +463,10 @@ tcp_syncookies - BOOLEAN
 	SYN flood warnings in logs not being really flooded, your server
 	is seriously misconfigured.
 
+	If you want to test which effects syncookies have to your
+	network connections you can set this knob to 2 to enable
+	unconditionally generation of syncookies.
+
 tcp_fastopen - INTEGER
 	Enable TCP Fast Open feature (draft-ietf-tcpm-fastopen) to send data
 	in the opening SYN packet. To use this feature, the client application
@@ -531,12 +558,6 @@ tcp_workaround_signed_windows - BOOLEAN
 	If unset, assume the remote TCP is not broken even if we do
 	not receive a window scaling option from them.
 	Default: 0
-
-tcp_dma_copybreak - INTEGER
-	Lower limit, in bytes, of the size of socket reads that will be
-	offloaded to a DMA copy engine, if one is present in the system
-	and CONFIG_NET_DMA is enabled.
-	Default: 4096
 
 tcp_thin_linear_timeouts - BOOLEAN
 	Enable dynamic triggering of linear timeouts for thin streams.
@@ -780,6 +801,11 @@ igmp_max_memberships - INTEGER
 	"interface" is the name of your network interface)
 
 	conf/all/*	  is special, changes the settings for all interfaces
+
+igmp_qrv - INTEGER
+	 Controls the IGMP query robustness variable (see RFC2236 8.1).
+	 Default: 2 (as specified by RFC2236 8.1)
+	 Minimum: 1 (as specified by RFC6636 4.5)
 
 log_martians - BOOLEAN
 	Log packets with impossible addresses to kernel log.
@@ -1058,6 +1084,11 @@ bindv6only - BOOLEAN
 		FALSE: enable IPv4-mapped address feature
 
 	Default: FALSE (as specified in RFC3493)
+
+mld_qrv - INTEGER
+	Controls the MLD query robustness variable (see RFC3810 9.1).
+	Default: 2 (as specified by RFC3810 9.1)
+	Minimum: 1 (as specified by RFC6636 4.5)
 
 IPv6 Fragmentation:
 

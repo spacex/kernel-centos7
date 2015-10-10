@@ -73,6 +73,7 @@
 
 #define QLA_SUCCESS			0
 #define QLA_ERROR			1
+#define STATUS(status)		status == QLA_ERROR ? "FAILED" : "SUCCEEDED"
 
 /*
  * Data bit definitions
@@ -210,6 +211,8 @@
 #define MAX_RESET_HA_RETRIES		2
 #define FW_ALIVE_WAIT_TOV		3
 #define IDC_EXTEND_TOV			8
+#define IDC_COMP_TOV			5
+#define LINK_UP_COMP_TOV		30
 
 #define CMD_SP(Cmnd)			((Cmnd)->SCp.ptr)
 
@@ -598,6 +601,7 @@ struct scsi_qla_host {
 #define DPC_HA_NEED_QUIESCENT		22 /* 0x00400000 ISP-82xx only*/
 #define DPC_POST_IDC_ACK		23 /* 0x00800000 */
 #define DPC_RESTORE_ACB			24 /* 0x01000000 */
+#define DPC_SYSFS_DDB_EXPORT		25 /* 0x02000000 */
 
 	struct Scsi_Host *host; /* pointer to host data */
 	uint32_t tot_ddbs;
@@ -824,6 +828,11 @@ struct scsi_qla_host {
 	uint32_t pf_bit;
 	struct qla4_83xx_idc_information idc_info;
 	struct addr_ctrl_blk *saved_acb;
+	int notify_idc_comp;
+	int notify_link_up_comp;
+	int idc_extend_tmo;
+	struct completion idc_comp;
+	struct completion link_up_comp;
 };
 
 struct ql4_task_data {

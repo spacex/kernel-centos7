@@ -518,16 +518,18 @@ static dma_addr_t vio_dma_iommu_map_page(struct device *dev, struct page *page,
                                          struct dma_attrs *attrs)
 {
 	struct vio_dev *viodev = to_vio_dev(dev);
+	struct iommu_table *tbl;
 	dma_addr_t ret = DMA_ERROR_CODE;
 
-	if (vio_cmo_alloc(viodev, roundup(size, IOMMU_PAGE_SIZE))) {
+	tbl = get_iommu_table_base(dev);
+	if (vio_cmo_alloc(viodev, roundup(size, IOMMU_PAGE_SIZE(tbl)))) {
 		atomic_inc(&viodev->cmo.allocs_failed);
 		return ret;
 	}
 
 	ret = dma_iommu_ops.map_page(dev, page, offset, size, direction, attrs);
 	if (unlikely(dma_mapping_error(dev, ret))) {
-		vio_cmo_dealloc(viodev, roundup(size, IOMMU_PAGE_SIZE));
+		vio_cmo_dealloc(viodev, roundup(size, IOMMU_PAGE_SIZE(tbl)));
 		atomic_inc(&viodev->cmo.allocs_failed);
 	}
 
@@ -540,10 +542,12 @@ static void vio_dma_iommu_unmap_page(struct device *dev, dma_addr_t dma_handle,
 				     struct dma_attrs *attrs)
 {
 	struct vio_dev *viodev = to_vio_dev(dev);
+	struct iommu_table *tbl;
 
+	tbl = get_iommu_table_base(dev);
 	dma_iommu_ops.unmap_page(dev, dma_handle, size, direction, attrs);
 
-	vio_cmo_dealloc(viodev, roundup(size, IOMMU_PAGE_SIZE));
+	vio_cmo_dealloc(viodev, roundup(size, IOMMU_PAGE_SIZE(tbl)));
 }
 
 static int vio_dma_iommu_map_sg(struct device *dev, struct scatterlist *sglist,
@@ -551,12 +555,14 @@ static int vio_dma_iommu_map_sg(struct device *dev, struct scatterlist *sglist,
                                 struct dma_attrs *attrs)
 {
 	struct vio_dev *viodev = to_vio_dev(dev);
+	struct iommu_table *tbl;
 	struct scatterlist *sgl;
 	int ret, count = 0;
 	size_t alloc_size = 0;
 
+	tbl = get_iommu_table_base(dev);
 	for (sgl = sglist; count < nelems; count++, sgl++)
-		alloc_size += roundup(sgl->length, IOMMU_PAGE_SIZE);
+		alloc_size += roundup(sgl->length, IOMMU_PAGE_SIZE(tbl));
 
 	if (vio_cmo_alloc(viodev, alloc_size)) {
 		atomic_inc(&viodev->cmo.allocs_failed);
@@ -572,7 +578,7 @@ static int vio_dma_iommu_map_sg(struct device *dev, struct scatterlist *sglist,
 	}
 
 	for (sgl = sglist, count = 0; count < ret; count++, sgl++)
-		alloc_size -= roundup(sgl->dma_length, IOMMU_PAGE_SIZE);
+		alloc_size -= roundup(sgl->dma_length, IOMMU_PAGE_SIZE(tbl));
 	if (alloc_size)
 		vio_cmo_dealloc(viodev, alloc_size);
 
@@ -585,12 +591,14 @@ static void vio_dma_iommu_unmap_sg(struct device *dev,
 		struct dma_attrs *attrs)
 {
 	struct vio_dev *viodev = to_vio_dev(dev);
+	struct iommu_table *tbl;
 	struct scatterlist *sgl;
 	size_t alloc_size = 0;
 	int count = 0;
 
+	tbl = get_iommu_table_base(dev);
 	for (sgl = sglist; count < nelems; count++, sgl++)
-		alloc_size += roundup(sgl->dma_length, IOMMU_PAGE_SIZE);
+		alloc_size += roundup(sgl->dma_length, IOMMU_PAGE_SIZE(tbl));
 
 	dma_iommu_ops.unmap_sg(dev, sglist, nelems, direction, attrs);
 
@@ -706,10 +714,13 @@ static int vio_cmo_bus_probe(struct vio_dev *viodev)
 {
 	struct vio_cmo_dev_entry *dev_ent;
 	struct device *dev = &viodev->dev;
+	struct iommu_table *tbl;
 	struct vio_driver *viodrv = to_vio_driver(dev->driver);
 	unsigned long flags;
 	size_t size;
 	bool dma_capable = false;
+
+	tbl = get_iommu_table_base(dev);
 
 	/* A device requires entitlement if it has a DMA window property */
 	switch (viodev->family) {
@@ -736,7 +747,8 @@ static int vio_cmo_bus_probe(struct vio_dev *viodev)
 			return -EINVAL;
 		}
 
-		viodev->cmo.desired = IOMMU_PAGE_ALIGN(viodrv->get_desired_dma(viodev));
+		viodev->cmo.desired =
+			IOMMU_PAGE_ALIGN(viodrv->get_desired_dma(viodev), tbl);
 		if (viodev->cmo.desired < VIO_CMO_MIN_ENT)
 			viodev->cmo.desired = VIO_CMO_MIN_ENT;
 		size = VIO_CMO_MIN_ENT;
@@ -1170,9 +1182,10 @@ static struct iommu_table *vio_build_iommu_table(struct vio_dev *dev)
 			    &tbl->it_index, &offset, &size);
 
 	/* TCE table size - measured in tce entries */
-	tbl->it_size = size >> IOMMU_PAGE_SHIFT;
+	tbl->it_page_shift = IOMMU_PAGE_SHIFT_4K;
+	tbl->it_size = size >> tbl->it_page_shift;
 	/* offset for VIO should always be 0 */
-	tbl->it_offset = offset >> IOMMU_PAGE_SHIFT;
+	tbl->it_offset = offset >> tbl->it_page_shift;
 	tbl->it_busno = 0;
 	tbl->it_type = TCE_VB;
 	tbl->it_blocksize = 16;
@@ -1413,8 +1426,8 @@ struct vio_dev *vio_register_device_node(struct device_node *of_node)
 
 		/* needed to ensure proper operation of coherent allocations
 		 * later, in case driver doesn't set it explicitly */
-		dma_set_mask(&viodev->dev, DMA_BIT_MASK(64));
-		dma_set_coherent_mask(&viodev->dev, DMA_BIT_MASK(64));
+		viodev->dev.coherent_dma_mask = DMA_BIT_MASK(64);
+		viodev->dev.dma_mask = &viodev->dev.coherent_dma_mask;
 	}
 
 	/* register with generic device framework */
@@ -1531,12 +1544,12 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 
 	dn = dev->of_node;
 	if (!dn) {
-		strcat(buf, "\n");
+		strcpy(buf, "\n");
 		return strlen(buf);
 	}
 	cp = of_get_property(dn, "compatible", NULL);
 	if (!cp) {
-		strcat(buf, "\n");
+		strcpy(buf, "\n");
 		return strlen(buf);
 	}
 

@@ -167,21 +167,14 @@ struct thread_vr_state {
 	vector128	vscr __attribute__((aligned(16)));
 };
 
-struct thread_struct {
-	unsigned long	ksp;		/* Kernel stack pointer */
-#ifdef CONFIG_PPC64
-	unsigned long	ksp_vsid;
-#endif
-	struct pt_regs	*regs;		/* Pointer to saved register state */
-	mm_segment_t	fs;		/* for get_fs() validation */
-#ifdef CONFIG_BOOKE
-	/* BookE base exception scratch space; align on cacheline */
-	unsigned long	normsave[8] ____cacheline_aligned;
-#endif
-#ifdef CONFIG_PPC32
-	void		*pgdir;		/* root of page-table tree */
-	unsigned long	ksp_limit;	/* if ksp <= ksp_limit stack overflow */
-#endif
+#ifndef __GENKSYMS__
+/*
+ * RHEL:
+ * This struct is embedded in thread_struct and matches the identical
+ * pre-change layout, hence why GENKSYMS works here.  Modifying this struct
+ * WILL break kabi.
+ */
+struct debug_reg {
 #ifdef CONFIG_PPC_ADV_DEBUG_REGS
 	/*
 	 * The following help to manage the use of Debug Control Registers
@@ -218,6 +211,67 @@ struct thread_struct {
 	unsigned long	dvc2;
 #endif
 #endif
+};
+#endif /* __GENKSYMS__ */
+
+struct thread_struct {
+	unsigned long	ksp;		/* Kernel stack pointer */
+
+#ifdef CONFIG_PPC64
+	unsigned long	ksp_vsid;
+#endif
+	struct pt_regs	*regs;		/* Pointer to saved register state */
+	mm_segment_t	fs;		/* for get_fs() validation */
+#ifdef CONFIG_BOOKE
+	/* BookE base exception scratch space; align on cacheline */
+	unsigned long	normsave[8] ____cacheline_aligned;
+#endif
+#ifdef CONFIG_PPC32
+	void		*pgdir;		/* root of page-table tree */
+	unsigned long	ksp_limit;	/* if ksp <= ksp_limit stack overflow */
+#endif
+#ifdef __GENKSYMS__
+#ifdef CONFIG_PPC_ADV_DEBUG_REGS
+	/*
+	 * The following help to manage the use of Debug Control Registers
+	 * om the BookE platforms.
+	 */
+	unsigned long	dbcr0;
+	unsigned long	dbcr1;
+#ifdef CONFIG_BOOKE
+	unsigned long	dbcr2;
+#endif
+	/*
+	 * The stored value of the DBSR register will be the value at the
+	 * last debug interrupt. This register can only be read from the
+	 * user (will never be written to) and has value while helping to
+	 * describe the reason for the last debug trap.  Torez
+	 */
+	unsigned long	dbsr;
+	/*
+	 * The following will contain addresses used by debug applications
+	 * to help trace and trap on particular address locations.
+	 * The bits in the Debug Control Registers above help define which
+	 * of the following registers will contain valid data and/or addresses.
+	 */
+	unsigned long	iac1;
+	unsigned long	iac2;
+#if CONFIG_PPC_ADV_DEBUG_IACS > 2
+	unsigned long	iac3;
+	unsigned long	iac4;
+#endif
+	unsigned long	dac1;
+	unsigned long	dac2;
+#if CONFIG_PPC_ADV_DEBUG_DVCS > 0
+	unsigned long	dvc1;
+	unsigned long	dvc2;
+#endif
+#endif
+#else /* __GENKSYMS__ */
+	/* Debug Registers */
+	struct debug_reg debug;
+#endif /* __GENKSYMS__ */
+
 	struct thread_fp_state	fp_state;
 	struct thread_fp_state	*fp_save_area;
 	int		fpexc_mode;	/* floating-point exception mode */
@@ -301,7 +355,7 @@ struct thread_struct {
 	unsigned long	mmcr2;
 	unsigned 	mmcr0;
 	unsigned 	used_ebb;
-	unsigned long	mmcra;
+	unsigned long	mmcra;	/* retain for KABI compliance */
 #endif
 };
 
@@ -442,14 +496,8 @@ extern unsigned long cpuidle_disable;
 enum idle_boot_override {IDLE_NO_OVERRIDE = 0, IDLE_POWERSAVE_OFF};
 
 extern int powersave_nap;	/* set if nap mode can be used in idle loop */
-extern void power7_nap(void);
-
-#ifdef CONFIG_PSERIES_IDLE
-extern void update_smt_snooze_delay(int cpu, int residency);
-#else
-static inline void update_smt_snooze_delay(int cpu, int residency) {}
-#endif
-
+extern void power7_nap(int check_irq);
+extern void power7_sleep(void);
 extern void flush_instruction_cache(void);
 extern void hard_reset_now(void);
 extern void poweroff_now(void);

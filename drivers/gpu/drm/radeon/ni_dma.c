@@ -24,6 +24,7 @@
 #include <drm/drmP.h>
 #include "radeon.h"
 #include "radeon_asic.h"
+#include "radeon_trace.h"
 #include "nid.h"
 
 u32 cayman_gpu_check_soft_reset(struct radeon_device *rdev);
@@ -156,7 +157,9 @@ void cayman_dma_stop(struct radeon_device *rdev)
 {
 	u32 rb_cntl;
 
-	radeon_ttm_set_active_vram_size(rdev, rdev->mc.visible_vram_size);
+	if ((rdev->asic->copy.copy_ring_index == R600_RING_TYPE_DMA_INDEX) ||
+	    (rdev->asic->copy.copy_ring_index == CAYMAN_RING_TYPE_DMA1_INDEX))
+		radeon_ttm_set_active_vram_size(rdev, rdev->mc.visible_vram_size);
 
 	/* dma0 */
 	rb_cntl = RREG32(DMA_RB_CNTL + DMA0_REGISTER_OFFSET);
@@ -187,12 +190,6 @@ int cayman_dma_resume(struct radeon_device *rdev)
 	u32 rb_bufsz;
 	u32 reg_offset, wb_offset;
 	int i, r;
-
-	/* Reset dma */
-	WREG32(SRBM_SOFT_RESET, SOFT_RESET_DMA | SOFT_RESET_DMA1);
-	RREG32(SRBM_SOFT_RESET);
-	udelay(50);
-	WREG32(SRBM_SOFT_RESET, 0);
 
 	for (i = 0; i < 2; i++) {
 		if (i == 0) {
@@ -245,8 +242,6 @@ int cayman_dma_resume(struct radeon_device *rdev)
 		ring->wptr = 0;
 		WREG32(DMA_RB_WPTR + reg_offset, ring->wptr << 2);
 
-		ring->rptr = RREG32(DMA_RB_RPTR + reg_offset) >> 2;
-
 		WREG32(DMA_RB_CNTL + reg_offset, rb_cntl | DMA_RB_ENABLE);
 
 		ring->ready = true;
@@ -258,7 +253,9 @@ int cayman_dma_resume(struct radeon_device *rdev)
 		}
 	}
 
-	radeon_ttm_set_active_vram_size(rdev, rdev->mc.real_vram_size);
+	if ((rdev->asic->copy.copy_ring_index == R600_RING_TYPE_DMA_INDEX) ||
+	    (rdev->asic->copy.copy_ring_index == CAYMAN_RING_TYPE_DMA1_INDEX))
+		radeon_ttm_set_active_vram_size(rdev, rdev->mc.real_vram_size);
 
 	return 0;
 }
@@ -297,11 +294,9 @@ bool cayman_dma_is_lockup(struct radeon_device *rdev, struct radeon_ring *ring)
 		mask = RADEON_RESET_DMA1;
 
 	if (!(reset_mask & mask)) {
-		radeon_ring_lockup_update(ring);
+		radeon_ring_lockup_update(rdev, ring);
 		return false;
 	}
-	/* force ring activities */
-	radeon_ring_force_activity(rdev, ring);
 	return radeon_ring_test_lockup(rdev, ring);
 }
 
@@ -314,8 +309,7 @@ bool cayman_dma_is_lockup(struct radeon_device *rdev, struct radeon_ring *ring)
  * @addr: dst addr to write into pe
  * @count: number of page entries to update
  * @incr: increase next addr by incr bytes
- * @flags: access flags
- * @r600_flags: hw access flags 
+ * @flags: hw access flags 
  *
  * Update the page tables using the DMA (cayman/TN).
  */
@@ -325,11 +319,12 @@ void cayman_dma_vm_set_page(struct radeon_device *rdev,
 			    uint64_t addr, unsigned count,
 			    uint32_t incr, uint32_t flags)
 {
-	uint32_t r600_flags = cayman_vm_page_flags(rdev, flags);
 	uint64_t value;
 	unsigned ndw;
 
-	if ((flags & RADEON_VM_PAGE_SYSTEM) || (count == 1)) {
+	trace_radeon_vm_set_page(pe, addr, count, incr, flags);
+
+	if ((flags & R600_PTE_SYSTEM) || (count == 1)) {
 		while (count) {
 			ndw = count * 2;
 			if (ndw > 0xFFFFE)
@@ -340,16 +335,16 @@ void cayman_dma_vm_set_page(struct radeon_device *rdev,
 			ib->ptr[ib->length_dw++] = pe;
 			ib->ptr[ib->length_dw++] = upper_32_bits(pe) & 0xff;
 			for (; ndw > 0; ndw -= 2, --count, pe += 8) {
-				if (flags & RADEON_VM_PAGE_SYSTEM) {
+				if (flags & R600_PTE_SYSTEM) {
 					value = radeon_vm_map_gart(rdev, addr);
 					value &= 0xFFFFFFFFFFFFF000ULL;
-				} else if (flags & RADEON_VM_PAGE_VALID) {
+				} else if (flags & R600_PTE_VALID) {
 					value = addr;
 				} else {
 					value = 0;
 				}
 				addr += incr;
-				value |= r600_flags;
+				value |= flags;
 				ib->ptr[ib->length_dw++] = value;
 				ib->ptr[ib->length_dw++] = upper_32_bits(value);
 			}
@@ -360,7 +355,7 @@ void cayman_dma_vm_set_page(struct radeon_device *rdev,
 			if (ndw > 0xFFFFE)
 				ndw = 0xFFFFE;
 
-			if (flags & RADEON_VM_PAGE_VALID)
+			if (flags & R600_PTE_VALID)
 				value = addr;
 			else
 				value = 0;
@@ -368,7 +363,7 @@ void cayman_dma_vm_set_page(struct radeon_device *rdev,
 			ib->ptr[ib->length_dw++] = DMA_PTE_PDE_PACKET(ndw);
 			ib->ptr[ib->length_dw++] = pe; /* dst addr */
 			ib->ptr[ib->length_dw++] = upper_32_bits(pe) & 0xff;
-			ib->ptr[ib->length_dw++] = r600_flags; /* mask */
+			ib->ptr[ib->length_dw++] = flags; /* mask */
 			ib->ptr[ib->length_dw++] = 0;
 			ib->ptr[ib->length_dw++] = value; /* value */
 			ib->ptr[ib->length_dw++] = upper_32_bits(value);

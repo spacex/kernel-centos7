@@ -60,7 +60,6 @@
 #include <linux/jump_label.h>
 #include <linux/pfn.h>
 #include <linux/bsearch.h>
-#include <linux/fips.h>
 #include <uapi/linux/module.h>
 #include "module-internal.h"
 
@@ -106,6 +105,40 @@ static LIST_HEAD(modules);
 #ifdef CONFIG_KGDB_KDB
 struct list_head *kdb_modules = &modules; /* kdb needs the list of modules */
 #endif /* CONFIG_KGDB_KDB */
+
+/* extended module structure for RHEL */
+struct module_ext {
+	struct list_head next;
+	struct module *module; /* "parent" struct */
+	char *rhelversion;
+};
+DEFINE_MUTEX(module_ext_mutex);
+LIST_HEAD(modules_ext);
+
+/* needs to take module_ext_mutex */
+struct module_ext *find_module_ext(struct module *mod)
+{
+	struct module_ext *mod_ext;
+
+	list_for_each_entry(mod_ext, &modules_ext, next)
+		if (mod == mod_ext->module)
+			return mod_ext;
+	BUG_ON(1); /* this can't happen */
+}
+
+bool check_module_rhelversion(struct module *mod, char *version)
+{
+	struct module_ext *mod_ext;
+	bool ret;
+
+	ret = false;
+	mutex_lock(&module_ext_mutex);
+	mod_ext = find_module_ext(mod);
+	if (!strncmp(mod_ext->rhelversion, version, strlen(version)))
+		ret = true;
+	mutex_unlock(&module_ext_mutex);
+	return ret;
+}
 
 #ifdef CONFIG_MODULE_SIG
 #ifdef CONFIG_MODULE_SIG_FORCE
@@ -615,8 +648,57 @@ static struct module_attribute modinfo_##field = {                    \
 	.free = free_modinfo_##field,                                 \
 };
 
+#define MODEXTINFO_ATTR(field)	\
+static void setup_modinfo_##field(struct module *mod, const char *s)  \
+{                                                                     \
+	struct module_ext *mod_ext;                                   \
+	mutex_lock(&module_ext_mutex);                                \
+	mod_ext = find_module_ext(mod);                               \
+	mod_ext->field = kstrdup(s, GFP_KERNEL);                      \
+	mutex_unlock(&module_ext_mutex);                              \
+}                                                                     \
+static ssize_t show_modinfo_##field(struct module_attribute *mattr,   \
+			struct module_kobject *mk, char *buffer)      \
+{                                                                     \
+	ssize_t ret;                                                  \
+	struct module_ext *mod_ext;                                   \
+	mutex_lock(&module_ext_mutex);                                \
+	mod_ext = find_module_ext(mk->mod);                           \
+	ret = sprintf(buffer, "%s\n", mod_ext->field);                \
+	mutex_unlock(&module_ext_mutex);                              \
+	return ret;                                                   \
+}                                                                     \
+static int modinfo_##field##_exists(struct module *mod)               \
+{                                                                     \
+	int ret;                                                      \
+	struct module_ext *mod_ext;                                   \
+	mutex_lock(&module_ext_mutex);                                \
+	mod_ext = find_module_ext(mod);                               \
+	ret = (mod_ext->field != NULL);                               \
+	mutex_unlock(&module_ext_mutex);                              \
+	return ret;                                                   \
+}                                                                     \
+static void free_modinfo_##field(struct module *mod)                  \
+{                                                                     \
+	struct module_ext *mod_ext;                                   \
+	mutex_lock(&module_ext_mutex);                                \
+	mod_ext = find_module_ext(mod);                               \
+	kfree(mod_ext->field);                                        \
+	mod_ext->field = NULL;                                        \
+	mutex_unlock(&module_ext_mutex);                              \
+}                                                                     \
+static struct module_attribute modinfo_##field = {                    \
+	.attr = { .name = __stringify(field), .mode = 0444 },         \
+	.show = show_modinfo_##field,                                 \
+	.setup = setup_modinfo_##field,                               \
+	.test = modinfo_##field##_exists,                             \
+	.free = free_modinfo_##field,                                 \
+};
+
+
 MODINFO_ATTR(version);
 MODINFO_ATTR(srcversion);
+MODEXTINFO_ATTR(rhelversion);
 
 static char last_unloaded_module[MODULE_NAME_LEN+1];
 
@@ -1121,6 +1203,7 @@ static struct module_attribute *modinfo_attrs[] = {
 	&module_uevent,
 	&modinfo_version,
 	&modinfo_srcversion,
+	&modinfo_rhelversion,
 	&modinfo_initstate,
 	&modinfo_coresize,
 	&modinfo_initsize,
@@ -1860,13 +1943,17 @@ void __weak module_arch_cleanup(struct module *mod)
 /* Free a module, remove from lists, etc. */
 static void free_module(struct module *mod)
 {
+	struct module_ext *mod_ext;
+
 	trace_module_free(mod);
 
 	mod_sysfs_teardown(mod);
 
 	/* We leave it in list to prevent duplicate loads, but make sure
 	 * that noone uses it while it's being deconstructed. */
+	mutex_lock(&module_mutex);
 	mod->state = MODULE_STATE_UNFORMED;
+	mutex_unlock(&module_mutex);
 
 	/* Remove dynamic debug info */
 	ddebug_remove_module(mod->name);
@@ -1884,6 +1971,11 @@ static void free_module(struct module *mod)
 	mutex_lock(&module_mutex);
 	stop_machine(__unlink_module, mod, NULL);
 	mutex_unlock(&module_mutex);
+
+	mutex_lock(&module_ext_mutex);
+	mod_ext = find_module_ext(mod);
+	list_del(&mod_ext->next);
+	mutex_unlock(&module_ext_mutex);
 
 	/* This may be NULL, but that's OK */
 	unset_module_init_ro_nx(mod);
@@ -2468,9 +2560,6 @@ static int module_sig_check(struct load_info *info)
 	}
 
 	/* Not having a signature is only an error if we're strict. */
-	if (err < 0 && fips_enabled)
-		panic("Module verification failed with error %d in FIPS mode\n",
-		      err);
 	if ((err == -ENOKEY && !sig_enforce) && (get_securelevel() <= 0))
 		err = 0;
 
@@ -3215,6 +3304,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 		       int flags)
 {
 	struct module *mod;
+	struct module_ext *mod_ext;
 	long err;
 
 	err = module_sig_check(info);
@@ -3264,12 +3354,30 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	if (err)
 		goto free_unload;
 
+	mutex_lock(&module_ext_mutex);
+	mod_ext = kzalloc(sizeof(*mod_ext), GFP_KERNEL);
+	if (!mod_ext) {
+		mutex_unlock(&module_ext_mutex);
+		goto free_unload;
+	}
+	mod_ext->module = mod;
+	INIT_LIST_HEAD(&mod_ext->next);
+	list_add(&mod_ext->next, &modules_ext);
+	mutex_unlock(&module_ext_mutex);
+
 	err = check_module_license_and_versions(mod);
 	if (err)
-		goto free_unload;
+		goto free_mod_ext;
 
 	/* Set up MODINFO_ATTR fields */
 	setup_modinfo(mod, info);
+
+	/*
+	 * If the rhelversion field doesn't exist then the module was built
+	 * on RHEL7.0
+	 */
+	if (!mod_ext->rhelversion)
+		mod_ext->rhelversion = kstrdup("7.0", GFP_KERNEL);
 
 	/* Fix up syms, so that st_value is a pointer to location. */
 	err = simplify_symbols(mod, info);
@@ -3335,6 +3443,10 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	module_arch_cleanup(mod);
  free_modinfo:
 	free_modinfo(mod);
+ free_mod_ext:
+	mutex_lock(&module_ext_mutex);
+	list_del(&mod_ext->next);
+	mutex_unlock(&module_ext_mutex);
  free_unload:
 	module_unload_free(mod);
  unlink_mod:

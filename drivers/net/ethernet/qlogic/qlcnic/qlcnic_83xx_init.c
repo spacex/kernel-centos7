@@ -39,6 +39,9 @@
 static int qlcnic_83xx_init_default_driver(struct qlcnic_adapter *adapter);
 static int qlcnic_83xx_check_heartbeat(struct qlcnic_adapter *p_dev);
 static int qlcnic_83xx_restart_hw(struct qlcnic_adapter *adapter);
+static int qlcnic_83xx_check_hw_status(struct qlcnic_adapter *p_dev);
+static int qlcnic_83xx_get_reset_instruction_template(struct qlcnic_adapter *);
+static void qlcnic_83xx_stop_hw(struct qlcnic_adapter *);
 
 /* Template header */
 struct qlc_83xx_reset_hdr {
@@ -380,7 +383,7 @@ static int qlcnic_83xx_idc_tx_soft_reset(struct qlcnic_adapter *adapter)
 	qlcnic_up(adapter, netdev);
 	netif_device_attach(netdev);
 	clear_bit(__QLCNIC_RESETTING, &adapter->state);
-	dev_err(&adapter->pdev->dev, "%s:\n", __func__);
+	netdev_info(adapter->netdev, "%s: soft reset complete.\n", __func__);
 
 	return 0;
 }
@@ -614,8 +617,7 @@ int qlcnic_83xx_idc_reattach_driver(struct qlcnic_adapter *adapter)
 	qlcnic_83xx_reinit_mbx_work(adapter->ahw->mailbox);
 	qlcnic_83xx_enable_mbx_interrupt(adapter);
 
-	/* register for NIC IDC AEN Events */
-	qlcnic_83xx_register_nic_idc_func(adapter, 1);
+	qlcnic_83xx_initialize_nic(adapter, 1);
 
 	err = qlcnic_sriov_pf_reinit(adapter);
 	if (err)
@@ -635,6 +637,8 @@ int qlcnic_83xx_idc_reattach_driver(struct qlcnic_adapter *adapter)
 
 	if (adapter->portnum == 0)
 		qlcnic_set_drv_version(adapter);
+
+	qlcnic_dcb_get_info(adapter->dcb);
 	qlcnic_83xx_idc_attach_driver(adapter);
 
 	return 0;
@@ -738,6 +742,7 @@ static int qlcnic_83xx_idc_unknown_state(struct qlcnic_adapter *adapter)
 	adapter->ahw->idc.err_code = -EIO;
 	dev_err(&adapter->pdev->dev,
 		"%s: Device in unknown state\n", __func__);
+	clear_bit(__QLCNIC_RESETTING, &adapter->state);
 	return 0;
 }
 
@@ -795,7 +800,6 @@ static int qlcnic_83xx_idc_init_state(struct qlcnic_adapter *adapter)
 			ret = qlcnic_83xx_idc_restart_hw(adapter, 1);
 	} else {
 		ret = qlcnic_83xx_idc_check_timeout(adapter, timeout);
-		return ret;
 	}
 
 	return ret;
@@ -845,6 +849,10 @@ static int qlcnic_83xx_idc_ready_state(struct qlcnic_adapter *adapter)
 			clear_bit(QLC_83XX_MBX_READY, &mbx->status);
 			set_bit(__QLCNIC_RESETTING, &adapter->state);
 			qlcnic_83xx_idc_enter_need_reset_state(adapter, 1);
+		}  else {
+			netdev_info(adapter->netdev, "%s: Auto firmware recovery is disabled\n",
+				    __func__);
+			qlcnic_83xx_idc_enter_failed_state(adapter, 1);
 		}
 		return -EIO;
 	}
@@ -896,7 +904,7 @@ static int qlcnic_83xx_idc_need_reset_state(struct qlcnic_adapter *adapter)
 		qlcnic_83xx_idc_update_audit_reg(adapter, 0, 1);
 		set_bit(__QLCNIC_RESETTING, &adapter->state);
 		clear_bit(QLC_83XX_MBX_READY, &mbx->status);
-		if (adapter->ahw->nic_mode == QLC_83XX_VIRTUAL_NIC_MODE)
+		if (adapter->ahw->nic_mode == QLCNIC_VNIC_MODE)
 			qlcnic_83xx_disable_vnic_mode(adapter, 1);
 
 		if (qlcnic_check_diag_status(adapter)) {
@@ -942,13 +950,26 @@ static int qlcnic_83xx_idc_need_quiesce_state(struct qlcnic_adapter *adapter)
 	return 0;
 }
 
-static int qlcnic_83xx_idc_failed_state(struct qlcnic_adapter *adapter)
+static void qlcnic_83xx_idc_failed_state(struct qlcnic_adapter *adapter)
 {
-	dev_err(&adapter->pdev->dev, "%s: please restart!!\n", __func__);
-	clear_bit(__QLCNIC_RESETTING, &adapter->state);
-	adapter->ahw->idc.err_code = -EIO;
+	struct qlcnic_hardware_context *ahw = adapter->ahw;
+	u32 val, owner;
 
-	return 0;
+	val = QLCRDX(adapter->ahw, QLC_83XX_IDC_CTRL);
+	if (val & QLC_83XX_IDC_DISABLE_FW_RESET_RECOVERY) {
+		owner = qlcnic_83xx_idc_find_reset_owner_id(adapter);
+		if (ahw->pci_func == owner) {
+			qlcnic_83xx_stop_hw(adapter);
+			qlcnic_dump_fw(adapter);
+		}
+	}
+
+	netdev_warn(adapter->netdev, "%s: Reboot will be required to recover the adapter!!\n",
+		    __func__);
+	clear_bit(__QLCNIC_RESETTING, &adapter->state);
+	ahw->idc.err_code = -EIO;
+
+	return;
 }
 
 static int qlcnic_83xx_idc_quiesce_state(struct qlcnic_adapter *adapter)
@@ -999,10 +1020,99 @@ static int qlcnic_83xx_idc_check_state_validity(struct qlcnic_adapter *adapter,
 	return 0;
 }
 
+#ifdef CONFIG_QLCNIC_VXLAN
+#define QLC_83XX_ENCAP_TYPE_VXLAN	BIT_1
+#define QLC_83XX_MATCH_ENCAP_ID		BIT_2
+#define QLC_83XX_SET_VXLAN_UDP_DPORT	BIT_3
+#define QLC_83XX_VXLAN_UDP_DPORT(PORT)	((PORT & 0xffff) << 16)
+
+#define QLCNIC_ENABLE_INGRESS_ENCAP_PARSING 1
+#define QLCNIC_DISABLE_INGRESS_ENCAP_PARSING 0
+
+static int qlcnic_set_vxlan_port(struct qlcnic_adapter *adapter)
+{
+	u16 port = adapter->ahw->vxlan_port;
+	struct qlcnic_cmd_args cmd;
+	int ret = 0;
+
+	memset(&cmd, 0, sizeof(cmd));
+
+	ret = qlcnic_alloc_mbx_args(&cmd, adapter,
+				    QLCNIC_CMD_INIT_NIC_FUNC);
+	if (ret)
+		return ret;
+
+	cmd.req.arg[1] = QLC_83XX_MULTI_TENANCY_INFO;
+	cmd.req.arg[2] = QLC_83XX_ENCAP_TYPE_VXLAN |
+			 QLC_83XX_SET_VXLAN_UDP_DPORT |
+			 QLC_83XX_VXLAN_UDP_DPORT(port);
+
+	ret = qlcnic_issue_cmd(adapter, &cmd);
+	if (ret)
+		netdev_err(adapter->netdev,
+			   "Failed to set VXLAN port %d in adapter\n",
+			   port);
+
+	qlcnic_free_mbx_args(&cmd);
+
+	return ret;
+}
+
+static int qlcnic_set_vxlan_parsing(struct qlcnic_adapter *adapter,
+				    bool state)
+{
+	u16 vxlan_port = adapter->ahw->vxlan_port;
+	struct qlcnic_cmd_args cmd;
+	int ret = 0;
+
+	memset(&cmd, 0, sizeof(cmd));
+
+	ret = qlcnic_alloc_mbx_args(&cmd, adapter,
+				    QLCNIC_CMD_SET_INGRESS_ENCAP);
+	if (ret)
+		return ret;
+
+	cmd.req.arg[1] = state ? QLCNIC_ENABLE_INGRESS_ENCAP_PARSING :
+				 QLCNIC_DISABLE_INGRESS_ENCAP_PARSING;
+
+	ret = qlcnic_issue_cmd(adapter, &cmd);
+	if (ret)
+		netdev_err(adapter->netdev,
+			   "Failed to %s VXLAN parsing for port %d\n",
+			   state ? "enable" : "disable", vxlan_port);
+	else
+		netdev_info(adapter->netdev,
+			    "%s VXLAN parsing for port %d\n",
+			    state ? "Enabled" : "Disabled", vxlan_port);
+
+	qlcnic_free_mbx_args(&cmd);
+
+	return ret;
+}
+#endif
+
 static void qlcnic_83xx_periodic_tasks(struct qlcnic_adapter *adapter)
 {
 	if (adapter->fhash.fnum)
 		qlcnic_prune_lb_filters(adapter);
+
+#ifdef CONFIG_QLCNIC_VXLAN
+	if (adapter->flags & QLCNIC_ADD_VXLAN_PORT) {
+		if (qlcnic_set_vxlan_port(adapter))
+			return;
+
+		if (qlcnic_set_vxlan_parsing(adapter, true))
+			return;
+
+		adapter->flags &= ~QLCNIC_ADD_VXLAN_PORT;
+	} else if (adapter->flags & QLCNIC_DEL_VXLAN_PORT) {
+		if (qlcnic_set_vxlan_parsing(adapter, false))
+			return;
+
+		adapter->ahw->vxlan_port = 0;
+		adapter->flags &= ~QLCNIC_DEL_VXLAN_PORT;
+	}
+#endif
 }
 
 /**
@@ -1207,10 +1317,10 @@ void qlcnic_83xx_idc_request_reset(struct qlcnic_adapter *adapter, u32 key)
 	}
 
 	val = QLCRDX(adapter->ahw, QLC_83XX_IDC_CTRL);
-	if ((val & QLC_83XX_IDC_DISABLE_FW_RESET_RECOVERY) ||
-	    !qlcnic_auto_fw_reset) {
-		dev_err(&adapter->pdev->dev,
-			"%s:failed, device in non reset mode\n", __func__);
+	if (val & QLC_83XX_IDC_DISABLE_FW_RESET_RECOVERY) {
+		netdev_info(adapter->netdev, "%s: Auto firmware recovery is disabled\n",
+			    __func__);
+		qlcnic_83xx_idc_enter_failed_state(adapter, 0);
 		qlcnic_83xx_unlock_driver(adapter);
 		return;
 	}
@@ -1242,69 +1352,71 @@ static int qlcnic_83xx_copy_bootloader(struct qlcnic_adapter *adapter)
 	if (size & 0xF)
 		size = (size + 16) & ~0xF;
 
-	p_cache = kzalloc(size, GFP_KERNEL);
+	p_cache = vzalloc(size);
 	if (p_cache == NULL)
 		return -ENOMEM;
 
 	ret = qlcnic_83xx_lockless_flash_read32(adapter, src, p_cache,
 						size / sizeof(u32));
 	if (ret) {
-		kfree(p_cache);
+		vfree(p_cache);
 		return ret;
 	}
 	/* 16 byte write to MS memory */
-	ret = qlcnic_83xx_ms_mem_write128(adapter, dest, (u32 *)p_cache,
-					  size / 16);
+	ret = qlcnic_ms_mem_write128(adapter, dest, (u32 *)p_cache,
+				     size / 16);
 	if (ret) {
-		kfree(p_cache);
+		vfree(p_cache);
 		return ret;
 	}
-	kfree(p_cache);
+	vfree(p_cache);
 
 	return ret;
 }
 
 static int qlcnic_83xx_copy_fw_file(struct qlcnic_adapter *adapter)
 {
+	struct qlc_83xx_fw_info *fw_info = adapter->ahw->fw_info;
+	const struct firmware *fw = fw_info->fw;
 	u32 dest, *p_cache;
-	u64 addr;
+	int i, ret = -EIO;
 	u8 data[16];
 	size_t size;
-	int i, ret = -EIO;
+	u64 addr;
 
 	dest = QLCRDX(adapter->ahw, QLCNIC_FW_IMAGE_ADDR);
-	size = (adapter->ahw->fw_info.fw->size & ~0xF);
-	p_cache = (u32 *)adapter->ahw->fw_info.fw->data;
+	size = (fw->size & ~0xF);
+	p_cache = (u32 *)fw->data;
 	addr = (u64)dest;
 
-	ret = qlcnic_83xx_ms_mem_write128(adapter, addr,
-					  (u32 *)p_cache, size / 16);
+	ret = qlcnic_ms_mem_write128(adapter, addr,
+				     p_cache, size / 16);
 	if (ret) {
 		dev_err(&adapter->pdev->dev, "MS memory write failed\n");
-		release_firmware(adapter->ahw->fw_info.fw);
-		adapter->ahw->fw_info.fw = NULL;
+		release_firmware(fw);
+		fw_info->fw = NULL;
 		return -EIO;
 	}
 
 	/* alignment check */
-	if (adapter->ahw->fw_info.fw->size & 0xF) {
+	if (fw->size & 0xF) {
 		addr = dest + size;
-		for (i = 0; i < (adapter->ahw->fw_info.fw->size & 0xF); i++)
-			data[i] = adapter->ahw->fw_info.fw->data[size + i];
+		for (i = 0; i < (fw->size & 0xF); i++)
+			data[i] = fw->data[size + i];
 		for (; i < 16; i++)
 			data[i] = 0;
-		ret = qlcnic_83xx_ms_mem_write128(adapter, addr,
-						  (u32 *)data, 1);
+		ret = qlcnic_ms_mem_write128(adapter, addr,
+					     (u32 *)data, 1);
 		if (ret) {
 			dev_err(&adapter->pdev->dev,
 				"MS memory write failed\n");
-			release_firmware(adapter->ahw->fw_info.fw);
-			adapter->ahw->fw_info.fw = NULL;
+			release_firmware(fw);
+			fw_info->fw = NULL;
 			return -EIO;
 		}
 	}
-	release_firmware(adapter->ahw->fw_info.fw);
-	adapter->ahw->fw_info.fw = NULL;
+	release_firmware(fw);
+	fw_info->fw = NULL;
 
 	return 0;
 }
@@ -1508,7 +1620,7 @@ static int qlcnic_83xx_check_cmd_peg_status(struct qlcnic_adapter *p_dev)
 	return -EIO;
 }
 
-int qlcnic_83xx_check_hw_status(struct qlcnic_adapter *p_dev)
+static int qlcnic_83xx_check_hw_status(struct qlcnic_adapter *p_dev)
 {
 	int err;
 
@@ -1581,7 +1693,7 @@ static int qlcnic_83xx_reset_template_checksum(struct qlcnic_adapter *p_dev)
 	}
 }
 
-int qlcnic_83xx_get_reset_instruction_template(struct qlcnic_adapter *p_dev)
+static int qlcnic_83xx_get_reset_instruction_template(struct qlcnic_adapter *p_dev)
 {
 	struct qlcnic_hardware_context *ahw = p_dev->ahw;
 	u32 addr, count, prev_ver, curr_ver;
@@ -1948,35 +2060,12 @@ static void qlcnic_83xx_init_hw(struct qlcnic_adapter *p_dev)
 		dev_err(&p_dev->pdev->dev, "%s: failed\n", __func__);
 }
 
-static inline void qlcnic_83xx_get_fw_file_name(struct qlcnic_adapter *adapter,
-						char *file_name)
-{
-	struct pci_dev *pdev = adapter->pdev;
-
-	memset(file_name, 0, QLC_FW_FILE_NAME_LEN);
-
-	switch (pdev->device) {
-	case PCI_DEVICE_ID_QLOGIC_QLE834X:
-		strncpy(file_name, QLC_83XX_FW_FILE_NAME,
-			QLC_FW_FILE_NAME_LEN);
-		break;
-	case PCI_DEVICE_ID_QLOGIC_QLE844X:
-		strncpy(file_name, QLC_84XX_FW_FILE_NAME,
-			QLC_FW_FILE_NAME_LEN);
-		break;
-	default:
-		dev_err(&pdev->dev, "%s: Invalid device id\n",
-			__func__);
-	}
-}
-
 static int qlcnic_83xx_load_fw_image_from_host(struct qlcnic_adapter *adapter)
 {
-	char fw_file_name[QLC_FW_FILE_NAME_LEN];
+	struct qlc_83xx_fw_info *fw_info = adapter->ahw->fw_info;
 	int err = -EIO;
 
-	qlcnic_83xx_get_fw_file_name(adapter, fw_file_name);
-	if (request_firmware(&adapter->ahw->fw_info.fw, fw_file_name,
+	if (request_firmware(&fw_info->fw, fw_info->fw_file_name,
 			     &(adapter->pdev->dev))) {
 		dev_err(&adapter->pdev->dev,
 			"No file FW image, loading flash FW image.\n");
@@ -2003,6 +2092,14 @@ static int qlcnic_83xx_restart_hw(struct qlcnic_adapter *adapter)
 	val = QLCRDX(adapter->ahw, QLC_83XX_IDC_CTRL);
 	if (!(val & QLC_83XX_IDC_GRACEFULL_RESET))
 		qlcnic_dump_fw(adapter);
+
+	if (val & QLC_83XX_IDC_DISABLE_FW_RESET_RECOVERY) {
+		netdev_info(adapter->netdev, "%s: Auto firmware recovery is disabled\n",
+			    __func__);
+		qlcnic_83xx_idc_enter_failed_state(adapter, 1);
+		return err;
+	}
+
 	qlcnic_83xx_init_hw(adapter);
 
 	if (qlcnic_83xx_copy_bootloader(adapter))
@@ -2023,37 +2120,7 @@ static int qlcnic_83xx_restart_hw(struct qlcnic_adapter *adapter)
 	return 0;
 }
 
-/**
-* qlcnic_83xx_config_default_opmode
-*
-* @adapter: adapter structure
-*
-* Configure default driver operating mode
-*
-* Returns: Error code or Success(0)
-* */
-int qlcnic_83xx_config_default_opmode(struct qlcnic_adapter *adapter)
-{
-	u32 op_mode;
-	struct qlcnic_hardware_context *ahw = adapter->ahw;
-
-	qlcnic_get_func_no(adapter);
-	op_mode = QLCRDX(ahw, QLC_83XX_DRV_OP_MODE);
-
-	if (test_bit(__QLCNIC_SRIOV_CAPABLE, &adapter->state))
-		op_mode = QLC_83XX_DEFAULT_OPMODE;
-
-	if (op_mode == QLC_83XX_DEFAULT_OPMODE) {
-		adapter->nic_ops->init_driver = qlcnic_83xx_init_default_driver;
-		ahw->idc.state_entry = qlcnic_83xx_idc_ready_state_entry;
-	} else {
-		return -EIO;
-	}
-
-	return 0;
-}
-
-int qlcnic_83xx_get_nic_configuration(struct qlcnic_adapter *adapter)
+static int qlcnic_83xx_get_nic_configuration(struct qlcnic_adapter *adapter)
 {
 	int err;
 	struct qlcnic_info nic_info;
@@ -2072,39 +2139,55 @@ int qlcnic_83xx_get_nic_configuration(struct qlcnic_adapter *adapter)
 	ahw->max_mac_filters = nic_info.max_mac_filters;
 	ahw->max_mtu = nic_info.max_mtu;
 
-	/* VNIC mode is detected by BIT_23 in capabilities. This bit is also
-	 * set in case device is SRIOV capable. VNIC and SRIOV are mutually
-	 * exclusive. So in case of sriov capable device load driver in
-	 * default mode
+	/* eSwitch capability indicates vNIC mode.
+	 * vNIC and SRIOV are mutually exclusive operational modes.
+	 * If SR-IOV capability is detected, SR-IOV physical function
+	 * will get initialized in default mode.
+	 * SR-IOV virtual function initialization follows a
+	 * different code path and opmode.
+	 * SRIOV mode has precedence over vNIC mode.
 	 */
-	if (test_bit(__QLCNIC_SRIOV_CAPABLE, &adapter->state)) {
-		ahw->nic_mode = QLC_83XX_DEFAULT_MODE;
-		return ahw->nic_mode;
-	}
+	if (test_bit(__QLCNIC_SRIOV_CAPABLE, &adapter->state))
+		return QLC_83XX_DEFAULT_OPMODE;
 
-	if (ahw->capabilities & BIT_23)
-		ahw->nic_mode = QLC_83XX_VIRTUAL_NIC_MODE;
-	else
-		ahw->nic_mode = QLC_83XX_DEFAULT_MODE;
+	if (ahw->capabilities & QLC_83XX_ESWITCH_CAPABILITY)
+		return QLCNIC_VNIC_MODE;
 
-	return ahw->nic_mode;
+	return QLC_83XX_DEFAULT_OPMODE;
 }
 
 int qlcnic_83xx_configure_opmode(struct qlcnic_adapter *adapter)
 {
+	struct qlcnic_hardware_context *ahw = adapter->ahw;
+	u16 max_sds_rings, max_tx_rings;
 	int ret;
 
 	ret = qlcnic_83xx_get_nic_configuration(adapter);
 	if (ret == -EIO)
 		return -EIO;
 
-	if (ret == QLC_83XX_VIRTUAL_NIC_MODE) {
+	if (ret == QLCNIC_VNIC_MODE) {
+		ahw->nic_mode = QLCNIC_VNIC_MODE;
+
 		if (qlcnic_83xx_config_vnic_opmode(adapter))
 			return -EIO;
-	} else if (ret == QLC_83XX_DEFAULT_MODE) {
-		if (qlcnic_83xx_config_default_opmode(adapter))
-			return -EIO;
+
+		max_sds_rings = QLCNIC_MAX_VNIC_SDS_RINGS;
+		max_tx_rings = QLCNIC_MAX_VNIC_TX_RINGS;
+	} else if (ret == QLC_83XX_DEFAULT_OPMODE) {
+		ahw->nic_mode = QLCNIC_DEFAULT_MODE;
+		adapter->nic_ops->init_driver = qlcnic_83xx_init_default_driver;
+		ahw->idc.state_entry = qlcnic_83xx_idc_ready_state_entry;
+		max_sds_rings = QLCNIC_MAX_SDS_RINGS;
+		max_tx_rings = QLCNIC_MAX_TX_RINGS;
+	} else {
+		dev_err(&adapter->pdev->dev, "%s: Invalid opmode %d\n",
+			__func__, ret);
+		return -EIO;
 	}
+
+	adapter->max_sds_rings = min(ahw->max_rx_ques, max_sds_rings);
+	adapter->max_tx_rings = min(ahw->max_tx_ques, max_tx_rings);
 
 	return 0;
 }
@@ -2172,12 +2255,66 @@ static void qlcnic_83xx_clear_function_resources(struct qlcnic_adapter *adapter)
 	}
 }
 
+static int qlcnic_83xx_get_fw_info(struct qlcnic_adapter *adapter)
+{
+	struct qlcnic_hardware_context *ahw = adapter->ahw;
+	struct pci_dev *pdev = adapter->pdev;
+	struct qlc_83xx_fw_info *fw_info;
+	int err = 0;
+
+	ahw->fw_info = kzalloc(sizeof(*fw_info), GFP_KERNEL);
+	if (!ahw->fw_info) {
+		err = -ENOMEM;
+	} else {
+		fw_info = ahw->fw_info;
+		switch (pdev->device) {
+		case PCI_DEVICE_ID_QLOGIC_QLE834X:
+			strncpy(fw_info->fw_file_name, QLC_83XX_FW_FILE_NAME,
+				QLC_FW_FILE_NAME_LEN);
+			break;
+		case PCI_DEVICE_ID_QLOGIC_QLE844X:
+			strncpy(fw_info->fw_file_name, QLC_84XX_FW_FILE_NAME,
+				QLC_FW_FILE_NAME_LEN);
+			break;
+		default:
+			dev_err(&pdev->dev, "%s: Invalid device id\n",
+				__func__);
+			err = -EINVAL;
+			break;
+		}
+	}
+
+	return err;
+}
+
+static void qlcnic_83xx_init_rings(struct qlcnic_adapter *adapter)
+{
+	u8 rx_cnt = QLCNIC_DEF_SDS_RINGS;
+	u8 tx_cnt = QLCNIC_DEF_TX_RINGS;
+
+	adapter->max_tx_rings = QLCNIC_MAX_TX_RINGS;
+	adapter->max_sds_rings = QLCNIC_MAX_SDS_RINGS;
+
+	if (!adapter->ahw->msix_supported) {
+		rx_cnt = QLCNIC_SINGLE_RING;
+		tx_cnt = QLCNIC_SINGLE_RING;
+	}
+
+	/* compute and set drv sds rings */
+	qlcnic_set_tx_ring_count(adapter, tx_cnt);
+	qlcnic_set_sds_ring_count(adapter, rx_cnt);
+}
+
 int qlcnic_83xx_init(struct qlcnic_adapter *adapter, int pci_using_dac)
 {
 	struct qlcnic_hardware_context *ahw = adapter->ahw;
 	int err = 0;
 
+	adapter->rx_mac_learn = false;
 	ahw->msix_supported = !!qlcnic_use_msi_x;
+
+	qlcnic_83xx_init_rings(adapter);
+
 	err = qlcnic_83xx_init_mailbox_work(adapter);
 	if (err)
 		goto exit;
@@ -2190,38 +2327,47 @@ int qlcnic_83xx_init(struct qlcnic_adapter *adapter, int pci_using_dac)
 			return err;
 	}
 
+	if (qlcnic_83xx_read_flash_descriptor_table(adapter) ||
+	    qlcnic_83xx_read_flash_mfg_id(adapter)) {
+		dev_err(&adapter->pdev->dev, "Failed reading flash mfg id\n");
+		err = -ENOTRECOVERABLE;
+		goto detach_mbx;
+	}
+
 	err = qlcnic_83xx_check_hw_status(adapter);
 	if (err)
 		goto detach_mbx;
 
-	if (!qlcnic_83xx_read_flash_descriptor_table(adapter))
-		qlcnic_83xx_read_flash_mfg_id(adapter);
+	err = qlcnic_83xx_get_fw_info(adapter);
+	if (err)
+		goto detach_mbx;
 
 	err = qlcnic_83xx_idc_init(adapter);
 	if (err)
 		goto detach_mbx;
 
-	err = qlcnic_setup_intr(adapter, 0, 0);
+	err = qlcnic_setup_intr(adapter);
 	if (err) {
 		dev_err(&adapter->pdev->dev, "Failed to setup interrupt\n");
 		goto disable_intr;
 	}
+
+	INIT_DELAYED_WORK(&adapter->idc_aen_work, qlcnic_83xx_idc_aen_work);
 
 	err = qlcnic_83xx_setup_mbx_intr(adapter);
 	if (err)
 		goto disable_mbx_intr;
 
 	qlcnic_83xx_clear_function_resources(adapter);
-
-	INIT_DELAYED_WORK(&adapter->idc_aen_work, qlcnic_83xx_idc_aen_work);
-
-	/* register for NIC IDC AEN Events */
-	qlcnic_83xx_register_nic_idc_func(adapter, 1);
+	qlcnic_dcb_enable(adapter->dcb);
+	qlcnic_83xx_initialize_nic(adapter, 1);
+	qlcnic_dcb_get_info(adapter->dcb);
 
 	/* Configure default, SR-IOV or Virtual NIC mode of operation */
 	err = qlcnic_83xx_configure_opmode(adapter);
 	if (err)
 		goto disable_mbx_intr;
+
 
 	/* Perform operating mode specific initialization */
 	err = adapter->nic_ops->init_driver(adapter);
@@ -2241,6 +2387,62 @@ disable_intr:
 detach_mbx:
 	qlcnic_83xx_detach_mailbox_work(adapter);
 	qlcnic_83xx_free_mailbox(ahw->mailbox);
+	ahw->mailbox = NULL;
 exit:
 	return err;
+}
+
+void qlcnic_83xx_aer_stop_poll_work(struct qlcnic_adapter *adapter)
+{
+	struct qlcnic_hardware_context *ahw = adapter->ahw;
+	struct qlc_83xx_idc *idc = &ahw->idc;
+
+	clear_bit(QLC_83XX_MBX_READY, &idc->status);
+	cancel_delayed_work_sync(&adapter->fw_work);
+
+	if (ahw->nic_mode == QLCNIC_VNIC_MODE)
+		qlcnic_83xx_disable_vnic_mode(adapter, 1);
+
+	qlcnic_83xx_idc_detach_driver(adapter);
+	qlcnic_83xx_initialize_nic(adapter, 0);
+
+	cancel_delayed_work_sync(&adapter->idc_aen_work);
+}
+
+int qlcnic_83xx_aer_reset(struct qlcnic_adapter *adapter)
+{
+	struct qlcnic_hardware_context *ahw = adapter->ahw;
+	struct qlc_83xx_idc *idc = &ahw->idc;
+	int ret = 0;
+	u32 owner;
+
+	/* Mark the previous IDC state as NEED_RESET so
+	 * that state_entry() will perform the reattachment
+	 * and bringup the device
+	 */
+	idc->prev_state = QLC_83XX_IDC_DEV_NEED_RESET;
+	owner = qlcnic_83xx_idc_find_reset_owner_id(adapter);
+	if (ahw->pci_func == owner) {
+		ret = qlcnic_83xx_restart_hw(adapter);
+		if (ret < 0)
+			return ret;
+		qlcnic_83xx_idc_clear_registers(adapter, 0);
+	}
+
+	ret = idc->state_entry(adapter);
+	return ret;
+}
+
+void qlcnic_83xx_aer_start_poll_work(struct qlcnic_adapter *adapter)
+{
+	struct qlcnic_hardware_context *ahw = adapter->ahw;
+	struct qlc_83xx_idc *idc = &ahw->idc;
+	u32 owner;
+
+	idc->prev_state = QLC_83XX_IDC_DEV_READY;
+	owner = qlcnic_83xx_idc_find_reset_owner_id(adapter);
+	if (ahw->pci_func == owner)
+		qlcnic_83xx_idc_enter_ready_state(adapter, 0);
+
+	qlcnic_schedule_work(adapter, qlcnic_83xx_idc_poll_dev_state, 0);
 }

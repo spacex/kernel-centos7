@@ -18,6 +18,7 @@
 #include <linux/atomic.h>
 #include <asm/processor.h>
 
+#include <linux/rh_kabi.h>
 /*
  * Simple, straightforward mutexes with strict semantics:
  *
@@ -56,11 +57,8 @@ struct mutex {
 	struct task_struct	*owner;
 #endif
 #ifdef CONFIG_MUTEX_SPIN_ON_OWNER
-#ifdef __GENKSYMS__
-	void			*spin_mlock;	/* Spinner MCS lock */
-#else
-	struct optimistic_spin_queue	*osq;	/* Spinner MCS lock */
-#endif
+	RH_KABI_REPLACE_P(void			*spin_mlock,	/* Spinner MCS lock */
+		          struct optimistic_spin_queue	*osq)	/* Spinner MCS lock */
 #endif
 #ifdef CONFIG_DEBUG_MUTEXES
 	const char 		*name;

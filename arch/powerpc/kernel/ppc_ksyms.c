@@ -117,8 +117,8 @@ EXPORT_SYMBOL(giveup_spe);
 #ifndef CONFIG_PPC64
 EXPORT_SYMBOL(flush_instruction_cache);
 #endif
-EXPORT_SYMBOL(__flush_icache_range);
 EXPORT_SYMBOL(flush_dcache_range);
+EXPORT_SYMBOL(flush_icache_range);
 
 #ifdef CONFIG_SMP
 #ifdef CONFIG_PPC32
@@ -148,12 +148,12 @@ EXPORT_SYMBOL(__ashldi3);
 EXPORT_SYMBOL(__lshrdi3);
 int __ucmpdi2(unsigned long long, unsigned long long);
 EXPORT_SYMBOL(__ucmpdi2);
+int __cmpdi2(long long, long long);
+EXPORT_SYMBOL(__cmpdi2);
 #endif
 long long __bswapdi2(long long);
 EXPORT_SYMBOL(__bswapdi2);
-#ifdef __BIG_ENDIAN__
 EXPORT_SYMBOL(memcpy);
-#endif
 EXPORT_SYMBOL(memset);
 EXPORT_SYMBOL(memmove);
 EXPORT_SYMBOL(memcmp);

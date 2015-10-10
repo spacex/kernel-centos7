@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2005 - 2013 Emulex
+ * Copyright (C) 2005 - 2014 Emulex
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -329,7 +329,7 @@ static int beiscsi_eh_device_reset(struct scsi_cmnd *sc)
 		if (!abrt_task->sc || abrt_task->state == ISCSI_TASK_FREE)
 			continue;
 
-		if (abrt_task->sc->device->lun != abrt_task->sc->device->lun)
+		if (sc->device->lun != abrt_task->sc->device->lun)
 			continue;
 
 		/* Invalidate WRB Posted for this Task */
@@ -599,15 +599,7 @@ static struct beiscsi_hba *beiscsi_hba_alloc(struct pci_dev *pcidev)
 	pci_set_drvdata(pcidev, phba);
 	phba->interface_handle = 0xFFFFFFFF;
 
-	if (iscsi_host_add(shost, &phba->pcidev->dev))
-		goto free_devices;
-
 	return phba;
-
-free_devices:
-	pci_dev_put(phba->pcidev);
-	iscsi_host_free(phba->shost);
-	return NULL;
 }
 
 static void beiscsi_unmap_pci_function(struct beiscsi_hba *phba)
@@ -2126,7 +2118,7 @@ static void  beiscsi_process_mcc_isr(struct beiscsi_hba *phba)
  * return
  *     Number of Completion Entries processed.
  **/
-static unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
+unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
 {
 	struct be_queue_info *cq;
 	struct sol_cqe *sol;
@@ -2168,6 +2160,18 @@ static unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
 
 		cri_index = BE_GET_CRI_FROM_CID(cid);
 		ep = phba->ep_array[cri_index];
+
+		if (ep == NULL) {
+			/* connection has already been freed
+			 * just move on to next one
+			 */
+			beiscsi_log(phba, KERN_WARNING,
+				    BEISCSI_LOG_INIT,
+				    "BM_%d : proc cqe of disconn ep: cid %d\n",
+				    cid);
+			goto proc_next_cqe;
+		}
+
 		beiscsi_ep = ep->dd_data;
 		beiscsi_conn = beiscsi_ep->conn;
 
@@ -2277,6 +2281,7 @@ static unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
 			break;
 		}
 
+proc_next_cqe:
 		AMAP_SET_BITS(struct amap_sol_cqe, valid, sol, 0);
 		queue_tail_inc(cq);
 		sol = queue_tail_node(cq);
@@ -2329,6 +2334,7 @@ static int be_iopoll(struct blk_iopoll *iop, int budget)
 
 	pbe_eq = container_of(iop, struct be_eq_obj, iopoll);
 	ret = beiscsi_process_cq(pbe_eq);
+	pbe_eq->cq_count += ret;
 	if (ret < budget) {
 		phba = pbe_eq->phba;
 		blk_iopoll_complete(iop);
@@ -3742,7 +3748,7 @@ static void hwi_cleanup(struct beiscsi_hba *phba)
 	struct hwi_controller *phwi_ctrlr;
 	struct hwi_context_memory *phwi_context;
 	struct hwi_async_pdu_context *pasync_ctx;
-	int i, eq_num, ulp_num;
+	int i, eq_for_mcc, ulp_num;
 
 	phwi_ctrlr = phba->phwi_ctrlr;
 	phwi_context = phwi_ctrlr->phwi_ctxt;
@@ -3779,16 +3785,17 @@ static void hwi_cleanup(struct beiscsi_hba *phba)
 		if (q->created)
 			beiscsi_cmd_q_destroy(ctrl, q, QTYPE_CQ);
 	}
+
+	be_mcc_queues_destroy(phba);
 	if (phba->msix_enabled)
-		eq_num = 1;
+		eq_for_mcc = 1;
 	else
-		eq_num = 0;
-	for (i = 0; i < (phba->num_cpus + eq_num); i++) {
+		eq_for_mcc = 0;
+	for (i = 0; i < (phba->num_cpus + eq_for_mcc); i++) {
 		q = &phwi_context->be_eq[i].q;
 		if (q->created)
 			beiscsi_cmd_q_destroy(ctrl, q, QTYPE_EQ);
 	}
-	be_mcc_queues_destroy(phba);
 	be_cmd_fw_uninit(ctrl);
 }
 
@@ -3883,9 +3890,9 @@ static int hwi_init_port(struct beiscsi_hba *phba)
 
 	phwi_ctrlr = phba->phwi_ctrlr;
 	phwi_context = phwi_ctrlr->phwi_ctxt;
-	phwi_context->max_eqd = 0;
+	phwi_context->max_eqd = 128;
 	phwi_context->min_eqd = 0;
-	phwi_context->cur_eqd = 64;
+	phwi_context->cur_eqd = 0;
 	be_cmd_fw_initialize(&phba->ctrl);
 
 	status = beiscsi_create_eqs(phba, phwi_context);
@@ -4254,6 +4261,8 @@ static int hba_setup_cid_tbls(struct beiscsi_hba *phba)
 		kfree(phba->ep_array);
 		phba->ep_array = NULL;
 		ret = -ENOMEM;
+
+		goto free_memory;
 	}
 
 	for (i = 0; i < phba->params.cxns_per_ctrl; i++) {
@@ -4432,6 +4441,10 @@ static void beiscsi_boot_release(void *data)
 static int beiscsi_setup_boot_info(struct beiscsi_hba *phba)
 {
 	struct iscsi_boot_kobj *boot_kobj;
+
+	/* it has been created previously */
+	if (phba->boot_kset)
+		return 0;
 
 	/* get boot info using mgmt cmd */
 	if (beiscsi_get_boot_info(phba))
@@ -5341,6 +5354,65 @@ static void beiscsi_msix_enable(struct beiscsi_hba *phba)
 	return;
 }
 
+static void be_eqd_update(struct beiscsi_hba *phba)
+{
+	struct be_set_eqd set_eqd[MAX_CPUS];
+	struct be_aic_obj *aic;
+	struct be_eq_obj *pbe_eq;
+	struct hwi_controller *phwi_ctrlr;
+	struct hwi_context_memory *phwi_context;
+	int eqd, i, num = 0;
+	ulong now;
+	u32 pps, delta;
+	unsigned int tag;
+
+	phwi_ctrlr = phba->phwi_ctrlr;
+	phwi_context = phwi_ctrlr->phwi_ctxt;
+
+	for (i = 0; i <= phba->num_cpus; i++) {
+		aic = &phba->aic_obj[i];
+		pbe_eq = &phwi_context->be_eq[i];
+		now = jiffies;
+		if (!aic->jiffies || time_before(now, aic->jiffies) ||
+		    pbe_eq->cq_count < aic->eq_prev) {
+			aic->jiffies = now;
+			aic->eq_prev = pbe_eq->cq_count;
+			continue;
+		}
+		delta = jiffies_to_msecs(now - aic->jiffies);
+		pps = (((u32)(pbe_eq->cq_count - aic->eq_prev) * 1000) / delta);
+		eqd = (pps / 1500) << 2;
+
+		if (eqd < 8)
+			eqd = 0;
+		eqd = min_t(u32, eqd, phwi_context->max_eqd);
+		eqd = max_t(u32, eqd, phwi_context->min_eqd);
+
+		aic->jiffies = now;
+		aic->eq_prev = pbe_eq->cq_count;
+
+		if (eqd != aic->prev_eqd) {
+			set_eqd[num].delay_multiplier = (eqd * 65)/100;
+			set_eqd[num].eq_id = pbe_eq->q.id;
+			aic->prev_eqd = eqd;
+			num++;
+		}
+	}
+	if (num) {
+		tag = be_cmd_modify_eq_delay(phba, set_eqd, num);
+		if (tag)
+			beiscsi_mccq_compl(phba, tag, NULL, NULL);
+	}
+}
+
+static void be_check_boot_session(struct beiscsi_hba *phba)
+{
+	if (beiscsi_setup_boot_info(phba))
+		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
+			    "BM_%d : Could not set up "
+			    "iSCSI boot info on async event.\n");
+}
+
 /*
  * beiscsi_hw_health_check()- Check adapter health
  * @work: work item to check HW health
@@ -5353,6 +5425,13 @@ beiscsi_hw_health_check(struct work_struct *work)
 	struct beiscsi_hba *phba =
 		container_of(work, struct beiscsi_hba,
 			     beiscsi_hw_check_task.work);
+
+	be_eqd_update(phba);
+
+	if (phba->state & BE_ADAPTER_CHECK_BOOT) {
+		phba->state &= ~BE_ADAPTER_CHECK_BOOT;
+		be_check_boot_session(phba);
+	}
 
 	beiscsi_ue_detect(phba);
 
@@ -5644,7 +5723,7 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 		phba->ctrl.mcc_numtag[i + 1] = 0;
 		phba->ctrl.mcc_tag_available++;
 		memset(&phba->ctrl.ptag_state[i].tag_mem_state, 0,
-		       sizeof(struct beiscsi_mcc_tag_state));
+		       sizeof(struct be_dma_mem));
 	}
 
 	phba->ctrl.mcc_alloc_index = phba->ctrl.mcc_free_index = 0;
@@ -5699,6 +5778,9 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 		goto free_blkenbld;
 	}
 	hwi_enable_intr(phba);
+
+	if (iscsi_host_add(phba->shost, &phba->pcidev->dev))
+		goto free_blkenbld;
 
 	if (beiscsi_setup_boot_info(phba))
 		/*

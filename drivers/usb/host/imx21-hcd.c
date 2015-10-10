@@ -62,6 +62,10 @@
 
 #include "imx21-hcd.h"
 
+#ifdef CONFIG_DYNAMIC_DEBUG
+#define DEBUG
+#endif
+
 #ifdef DEBUG
 #define DEBUG_LOG_FRAME(imx21, etd, event) \
 	(etd)->event##_frame = readl((imx21)->regs + USBH_FRMNUB)
@@ -1926,7 +1930,7 @@ failed_request_mem:
 
 static struct platform_driver imx21_hcd_driver = {
 	.driver = {
-		   .name = (char *)hcd_name,
+		   .name = hcd_name,
 		   },
 	.probe = imx21_probe,
 	.remove = imx21_remove,

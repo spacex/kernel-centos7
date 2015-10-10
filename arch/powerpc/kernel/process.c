@@ -25,7 +25,6 @@
 #include <linux/slab.h>
 #include <linux/user.h>
 #include <linux/elf.h>
-#include <linux/init.h>
 #include <linux/prctl.h>
 #include <linux/init_task.h>
 #include <linux/export.h>
@@ -55,6 +54,7 @@
 #ifdef CONFIG_PPC64
 #include <asm/firmware.h>
 #endif
+#include <asm/code-patching.h>
 #include <linux/kprobes.h>
 #include <linux/kdebug.h>
 
@@ -356,28 +356,28 @@ static DEFINE_PER_CPU(struct arch_hw_breakpoint, current_brk);
  */
 static void set_debug_reg_defaults(struct thread_struct *thread)
 {
-	thread->iac1 = thread->iac2 = 0;
+	thread->debug.iac1 = thread->debug.iac2 = 0;
 #if CONFIG_PPC_ADV_DEBUG_IACS > 2
-	thread->iac3 = thread->iac4 = 0;
+	thread->debug.iac3 = thread->debug.iac4 = 0;
 #endif
-	thread->dac1 = thread->dac2 = 0;
+	thread->debug.dac1 = thread->debug.dac2 = 0;
 #if CONFIG_PPC_ADV_DEBUG_DVCS > 0
-	thread->dvc1 = thread->dvc2 = 0;
+	thread->debug.dvc1 = thread->debug.dvc2 = 0;
 #endif
-	thread->dbcr0 = 0;
+	thread->debug.dbcr0 = 0;
 #ifdef CONFIG_BOOKE
 	/*
 	 * Force User/Supervisor bits to b11 (user-only MSR[PR]=1)
 	 */
-	thread->dbcr1 = DBCR1_IAC1US | DBCR1_IAC2US |	\
+	thread->debug.dbcr1 = DBCR1_IAC1US | DBCR1_IAC2US |
 			DBCR1_IAC3US | DBCR1_IAC4US;
 	/*
 	 * Force Data Address Compare User/Supervisor bits to be User-only
 	 * (0b11 MSR[PR]=1) and set all other bits in DBCR2 register to be 0.
 	 */
-	thread->dbcr2 = DBCR2_DAC1US | DBCR2_DAC2US;
+	thread->debug.dbcr2 = DBCR2_DAC1US | DBCR2_DAC2US;
 #else
-	thread->dbcr1 = 0;
+	thread->debug.dbcr1 = 0;
 #endif
 }
 
@@ -390,22 +390,22 @@ static void prime_debug_regs(struct thread_struct *thread)
 	 */
 	mtmsr(mfmsr() & ~MSR_DE);
 
-	mtspr(SPRN_IAC1, thread->iac1);
-	mtspr(SPRN_IAC2, thread->iac2);
+	mtspr(SPRN_IAC1, thread->debug.iac1);
+	mtspr(SPRN_IAC2, thread->debug.iac2);
 #if CONFIG_PPC_ADV_DEBUG_IACS > 2
-	mtspr(SPRN_IAC3, thread->iac3);
-	mtspr(SPRN_IAC4, thread->iac4);
+	mtspr(SPRN_IAC3, thread->debug.iac3);
+	mtspr(SPRN_IAC4, thread->debug.iac4);
 #endif
-	mtspr(SPRN_DAC1, thread->dac1);
-	mtspr(SPRN_DAC2, thread->dac2);
+	mtspr(SPRN_DAC1, thread->debug.dac1);
+	mtspr(SPRN_DAC2, thread->debug.dac2);
 #if CONFIG_PPC_ADV_DEBUG_DVCS > 0
-	mtspr(SPRN_DVC1, thread->dvc1);
-	mtspr(SPRN_DVC2, thread->dvc2);
+	mtspr(SPRN_DVC1, thread->debug.dvc1);
+	mtspr(SPRN_DVC2, thread->debug.dvc2);
 #endif
-	mtspr(SPRN_DBCR0, thread->dbcr0);
-	mtspr(SPRN_DBCR1, thread->dbcr1);
+	mtspr(SPRN_DBCR0, thread->debug.dbcr0);
+	mtspr(SPRN_DBCR1, thread->debug.dbcr1);
 #ifdef CONFIG_BOOKE
-	mtspr(SPRN_DBCR2, thread->dbcr2);
+	mtspr(SPRN_DBCR2, thread->debug.dbcr2);
 #endif
 }
 /*
@@ -413,12 +413,13 @@ static void prime_debug_regs(struct thread_struct *thread)
  * debug registers, set the debug registers from the values
  * stored in the new thread.
  */
-static void switch_booke_debug_regs(struct thread_struct *new_thread)
+void switch_booke_debug_regs(struct thread_struct *new_thread)
 {
-	if ((current->thread.dbcr0 & DBCR0_IDM)
-		|| (new_thread->dbcr0 & DBCR0_IDM))
+	if ((current->thread.debug.dbcr0 & DBCR0_IDM)
+		|| (new_thread->debug.dbcr0 & DBCR0_IDM))
 			prime_debug_regs(new_thread);
 }
+EXPORT_SYMBOL_GPL(switch_booke_debug_regs);
 #else	/* !CONFIG_PPC_ADV_DEBUG_REGS */
 #ifndef CONFIG_HAVE_HW_BREAKPOINT
 static void set_debug_reg_defaults(struct thread_struct *thread)
@@ -495,14 +496,21 @@ static inline int set_dawr(struct arch_hw_breakpoint *brk)
 	return 0;
 }
 
-int set_breakpoint(struct arch_hw_breakpoint *brk)
+void __set_breakpoint(struct arch_hw_breakpoint *brk)
 {
 	__get_cpu_var(current_brk) = *brk;
 
 	if (cpu_has_feature(CPU_FTR_DAWR))
-		return set_dawr(brk);
+		set_dawr(brk);
+	else
+		set_dabr(brk);
+}
 
-	return set_dabr(brk);
+void set_breakpoint(struct arch_hw_breakpoint *brk)
+{
+	preempt_disable();
+	__set_breakpoint(brk);
+	preempt_enable();
 }
 
 #ifdef CONFIG_PPC64
@@ -740,21 +748,22 @@ struct task_struct *__switch_to(struct task_struct *prev,
 	struct task_struct *new)
 {
 	struct thread_struct *new_thread, *old_thread;
-	unsigned long flags;
 	struct task_struct *last;
 #ifdef CONFIG_PPC_BOOK3S_64
 	struct ppc64_tlb_batch *batch;
 #endif
 
-	/* Back up the TAR across context switches.
+	WARN_ON(!irqs_disabled());
+
+	/* Back up the TAR and DSCR across context switches.
 	 * Note that the TAR is not available for use in the kernel.  (To
 	 * provide this, the TAR should be backed up/restored on exception
 	 * entry/exit instead, and be in pt_regs.  FIXME, this should be in
 	 * pt_regs anyway (for debug).)
-	 * Save the TAR here before we do treclaim/trecheckpoint as these
-	 * will change the TAR.
+	 * Save the TAR and DSCR here before we do treclaim/trecheckpoint as
+	 * these will change them.
 	 */
-	save_tar(&prev->thread);
+	save_early_sprs(&prev->thread);
 
 	__switch_to_tm(prev);
 
@@ -832,8 +841,8 @@ struct task_struct *__switch_to(struct task_struct *prev,
  * schedule DABR
  */
 #ifndef CONFIG_HAVE_HW_BREAKPOINT
-	if (unlikely(hw_brk_match(&__get_cpu_var(current_brk), &new->thread.hw_brk)))
-		set_breakpoint(&new->thread.hw_brk);
+	if (unlikely(!hw_brk_match(&__get_cpu_var(current_brk), &new->thread.hw_brk)))
+		__set_breakpoint(&new->thread.hw_brk);
 #endif /* CONFIG_HAVE_HW_BREAKPOINT */
 #endif
 
@@ -865,8 +874,6 @@ struct task_struct *__switch_to(struct task_struct *prev,
 	}
 #endif /* CONFIG_PPC_BOOK3S_64 */
 
-	local_irq_save(flags);
-
 	/*
 	 * We can't take a PMU exception inside _switch() since there is a
 	 * window where the kernel stack SLB and the kernel stack are out
@@ -885,8 +892,6 @@ struct task_struct *__switch_to(struct task_struct *prev,
 		batch->active = 1;
 	}
 #endif /* CONFIG_PPC_BOOK3S_64 */
-
-	local_irq_restore(flags);
 
 	return last;
 }
@@ -1004,17 +1009,21 @@ void show_regs(struct pt_regs * regs)
 	printk("MSR: "REG" ", regs->msr);
 	printbits(regs->msr, msr_bits);
 	printk("  CR: %08lx  XER: %08lx\n", regs->ccr, regs->xer);
-#ifdef CONFIG_PPC64
-	printk("SOFTE: %ld\n", regs->softe);
-#endif
 	trap = TRAP(regs);
 	if ((regs->trap != 0xc00) && cpu_has_feature(CPU_FTR_CFAR))
-		printk("CFAR: "REG"\n", regs->orig_gpr3);
-	if (trap == 0x300 || trap == 0x600)
+		printk("CFAR: "REG" ", regs->orig_gpr3);
+	if (trap == 0x200 || trap == 0x300 || trap == 0x600)
 #if defined(CONFIG_4xx) || defined(CONFIG_BOOKE)
-		printk("DEAR: "REG", ESR: "REG"\n", regs->dar, regs->dsisr);
+		printk("DEAR: "REG" ESR: "REG" ", regs->dar, regs->dsisr);
 #else
-		printk("DAR: "REG", DSISR: %08lx\n", regs->dar, regs->dsisr);
+		printk("DAR: "REG" DSISR: %08lx ", regs->dar, regs->dsisr);
+#endif
+#ifdef CONFIG_PPC64
+	printk("SOFTE: %ld ", regs->softe);
+#endif
+#ifdef CONFIG_PPC_TRANSACTIONAL_MEM
+	if (MSR_TM_ACTIVE(regs->msr))
+		printk("\nPACATMSCRATCH: %016llx ", get_paca()->tm_scratch);
 #endif
 
 	for (i = 0;  i < 32;  i++) {
@@ -1032,9 +1041,6 @@ void show_regs(struct pt_regs * regs)
 	 */
 	printk("NIP ["REG"] %pS\n", regs->nip, (void *)regs->nip);
 	printk("LR ["REG"] %pS\n", regs->link, (void *)regs->link);
-#endif
-#ifdef CONFIG_PPC_TRANSACTIONAL_MEM
-	printk("PACATMSCRATCH [%llx]\n", get_paca()->tm_scratch);
 #endif
 	show_stack(current, (unsigned long *) regs->gpr[1]);
 	if (!user_mode(regs))
@@ -1110,7 +1116,9 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 		struct thread_info *ti = (void *)task_stack_page(p);
 		memset(childregs, 0, sizeof(struct pt_regs));
 		childregs->gpr[1] = sp + sizeof(struct pt_regs);
-		childregs->gpr[14] = usp;	/* function */
+		/* function */
+		if (usp)
+			childregs->gpr[14] = ppc_function_entry((void *)usp);
 #ifdef CONFIG_PPC64
 		clear_tsk_thread_flag(p, TIF_32BIT);
 		childregs->softe = 1;
@@ -1189,17 +1197,7 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 	if (cpu_has_feature(CPU_FTR_HAS_PPR))
 		p->thread.ppr = INIT_PPR;
 #endif
-	/*
-	 * The PPC64 ABI makes use of a TOC to contain function 
-	 * pointers.  The function (ret_from_except) is actually a pointer
-	 * to the TOC entry.  The first entry is a pointer to the actual
-	 * function.
-	 */
-#ifdef CONFIG_PPC64
-	kregs->nip = *((unsigned long *)f);
-#else
-	kregs->nip = (unsigned long)f;
-#endif
+	kregs->nip = ppc_function_entry(f);
 	return 0;
 }
 

@@ -19,6 +19,18 @@
 #include <asm/tlbflush.h>
 
 /*
+ *  * Allocate memory for an auxillary struct to workaround kabi
+ *   */
+struct protptrs_kabi *subpage_prot_alloc_kabi(void)
+{
+	struct protptrs_kabi *p;
+
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+
+	return p;
+}
+
+/*
  * Free all pages allocated for subpage protection maps and pointers.
  * Also makes sure that the subpage_prot_table structure is
  * reinitialized for the next user.
@@ -35,18 +47,27 @@ void subpage_prot_free(struct mm_struct *mm)
 			spt->low_prot[i] = NULL;
 		}
 	}
+
+	if (!spt->rh_kabi) {
+		/* no need to allocate, just skip free'ing pages */
+		goto next;
+	}
+
 	addr = 0;
 	for (i = 0; i < 2; ++i) {
-		p = spt->protptrs[i];
+		p = spt->rh_kabi->protptrs[i];
 		if (!p)
 			continue;
-		spt->protptrs[i] = NULL;
+		spt->rh_kabi->protptrs[i] = NULL;
 		for (j = 0; j < SBP_L2_COUNT && addr < spt->maxaddr;
 		     ++j, addr += PAGE_SIZE)
 			if (p[j])
 				free_page((unsigned long)p[j]);
 		free_page((unsigned long)p);
 	}
+	kfree(spt->rh_kabi);
+
+next:
 	spt->maxaddr = 0;
 }
 
@@ -99,6 +120,11 @@ static void subpage_prot_clear(unsigned long addr, unsigned long len)
 	size_t nw;
 	unsigned long next, limit;
 
+	if (!spt->rh_kabi) {
+		spt->rh_kabi = subpage_prot_alloc_kabi();
+		/* can't return failure here, deal with it below */
+	}
+
 	down_write(&mm->mmap_sem);
 	limit = addr + len;
 	if (limit > spt->maxaddr)
@@ -108,7 +134,9 @@ static void subpage_prot_clear(unsigned long addr, unsigned long len)
 		if (addr < 0x100000000UL) {
 			spm = spt->low_prot;
 		} else {
-			spm = spt->protptrs[addr >> SBP_L3_SHIFT];
+			if (!spt->rh_kabi)
+				continue;
+			spm = spt->rh_kabi->protptrs[addr >> SBP_L3_SHIFT];
 			if (!spm)
 				continue;
 		}
@@ -205,6 +233,12 @@ long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map)
 	if (is_hugepage_only_range(mm, addr, len))
 		return -EINVAL;
 
+	if (!spt->rh_kabi) {
+		spt->rh_kabi = subpage_prot_alloc_kabi();
+		if (!spt->rh_kabi)
+			return -ENOMEM;
+	}
+
 	if (!map) {
 		/* Clear out the protection map for the address range */
 		subpage_prot_clear(addr, len);
@@ -222,12 +256,12 @@ long sys_subpage_prot(unsigned long addr, unsigned long len, u32 __user *map)
 		if (addr < 0x100000000UL) {
 			spm = spt->low_prot;
 		} else {
-			spm = spt->protptrs[addr >> SBP_L3_SHIFT];
+			spm = spt->rh_kabi->protptrs[addr >> SBP_L3_SHIFT];
 			if (!spm) {
 				spm = (u32 **)get_zeroed_page(GFP_KERNEL);
 				if (!spm)
 					goto out;
-				spt->protptrs[addr >> SBP_L3_SHIFT] = spm;
+				spt->rh_kabi->protptrs[addr >> SBP_L3_SHIFT] = spm;
 			}
 		}
 		spm += (addr >> SBP_L2_SHIFT) & (SBP_L2_COUNT - 1);

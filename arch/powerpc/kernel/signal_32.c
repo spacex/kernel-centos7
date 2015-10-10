@@ -54,7 +54,6 @@
 
 #include "signal.h"
 
-#undef DEBUG_SIG
 
 #ifdef CONFIG_PPC64
 #define sys_rt_sigreturn	compat_sys_rt_sigreturn
@@ -1071,10 +1070,6 @@ int handle_rt_signal32(unsigned long sig, struct k_sigaction *ka,
 	return 1;
 
 badframe:
-#ifdef DEBUG_SIG
-	printk("badframe in handle_rt_signal, regs=%p frame=%p newsp=%lx\n",
-	       regs, frame, newsp);
-#endif
 	if (show_unhandled_signals)
 		printk_ratelimited(KERN_INFO
 				   "%s[%d]: bad frame in handle_rt_signal32: "
@@ -1323,7 +1318,7 @@ int sys_debug_setcontext(struct ucontext __user *ctx,
 	unsigned char tmp;
 	unsigned long new_msr = regs->msr;
 #ifdef CONFIG_PPC_ADV_DEBUG_REGS
-	unsigned long new_dbcr0 = current->thread.dbcr0;
+	unsigned long new_dbcr0 = current->thread.debug.dbcr0;
 #endif
 
 	for (i=0; i<ndbg; i++) {
@@ -1338,7 +1333,7 @@ int sys_debug_setcontext(struct ucontext __user *ctx,
 			} else {
 				new_dbcr0 &= ~DBCR0_IC;
 				if (!DBCR_ACTIVE_EVENTS(new_dbcr0,
-						current->thread.dbcr1)) {
+						current->thread.debug.dbcr1)) {
 					new_msr &= ~MSR_DE;
 					new_dbcr0 &= ~DBCR0_IDM;
 				}
@@ -1373,7 +1368,7 @@ int sys_debug_setcontext(struct ucontext __user *ctx,
 	   the user is really doing something wrong. */
 	regs->msr = new_msr;
 #ifdef CONFIG_PPC_ADV_DEBUG_REGS
-	current->thread.dbcr0 = new_dbcr0;
+	current->thread.debug.dbcr0 = new_dbcr0;
 #endif
 
 	if (!access_ok(VERIFY_READ, ctx, sizeof(*ctx))
@@ -1492,10 +1487,6 @@ int handle_signal32(unsigned long sig, struct k_sigaction *ka,
 	return 1;
 
 badframe:
-#ifdef DEBUG_SIG
-	printk("badframe in handle_signal, regs=%p frame=%p newsp=%lx\n",
-	       regs, frame, newsp);
-#endif
 	if (show_unhandled_signals)
 		printk_ratelimited(KERN_INFO
 				   "%s[%d]: bad frame in handle_signal32: "

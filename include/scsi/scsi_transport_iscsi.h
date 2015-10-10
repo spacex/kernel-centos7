@@ -166,6 +166,8 @@ struct iscsi_transport {
 	int (*logout_flashnode) (struct iscsi_bus_flash_session *fnode_sess,
 				 struct iscsi_bus_flash_conn *fnode_conn);
 	int (*logout_flashnode_sid) (struct iscsi_cls_session *cls_sess);
+	int (*get_host_stats) (struct Scsi_Host *shost, char *buf, int len);
+	u8 (*check_protection)(struct iscsi_task *task, sector_t *sector);
 };
 
 /*

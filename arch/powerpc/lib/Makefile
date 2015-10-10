@@ -23,9 +23,7 @@ obj-y			+= checksum_$(CONFIG_WORD_SIZE).o
 obj-$(CONFIG_PPC64)	+= checksum_wrappers_64.o
 endif
 
-ifeq ($(CONFIG_CPU_LITTLE_ENDIAN),)
 obj-$(CONFIG_PPC64)		+= memcpy_power7.o memcpy_64.o 
-endif
 
 obj-$(CONFIG_PPC_EMULATE_SSTEP)	+= sstep.o ldstfp.o
 
@@ -39,3 +37,6 @@ obj-$(CONFIG_PPC_LIB_RHEAP) += rheap.o
 obj-y			+= code-patching.o
 obj-y			+= feature-fixups.o
 obj-$(CONFIG_FTR_FIXUP_SELFTEST) += feature-fixups-test.o
+
+obj-$(CONFIG_ALTIVEC)	+= xor_vmx.o
+CFLAGS_xor_vmx.o += -maltivec -mabi=altivec

@@ -1327,12 +1327,6 @@ static netdev_features_t bond_fix_features(struct net_device *dev,
 
 	read_lock(&bond->lock);
 
-	if (!bond->first_slave) {
-		/* Disable adding VLANs to empty bond. But why? --mq */
-		features |= NETIF_F_VLAN_CHALLENGED;
-		goto out;
-	}
-
 	mask = features;
 	features &= ~NETIF_F_ONE_FOR_ALL;
 	features |= NETIF_F_ALL_FOR_ALL;
@@ -1344,7 +1338,6 @@ static netdev_features_t bond_fix_features(struct net_device *dev,
 	}
 	features = netdev_add_tso_features(features, mask);
 
-out:
 	read_unlock(&bond->lock);
 	return features;
 }
@@ -1488,7 +1481,7 @@ static int bond_master_upper_dev_link(struct net_device *bond_dev,
 	if (err)
 		return err;
 	slave_dev->flags |= IFF_SLAVE;
-	rtmsg_ifinfo(RTM_NEWLINK, slave_dev, IFF_SLAVE);
+	rtmsg_ifinfo(RTM_NEWLINK, slave_dev, IFF_SLAVE, GFP_KERNEL);
 	return 0;
 }
 
@@ -1497,7 +1490,7 @@ static void bond_upper_dev_unlink(struct net_device *bond_dev,
 {
 	netdev_upper_dev_unlink(slave_dev, bond_dev);
 	slave_dev->flags &= ~IFF_SLAVE;
-	rtmsg_ifinfo(RTM_NEWLINK, slave_dev, IFF_SLAVE);
+	rtmsg_ifinfo(RTM_NEWLINK, slave_dev, IFF_SLAVE, GFP_KERNEL);
 }
 
 /* enslave device <slave> to bond device <master> */
@@ -2063,13 +2056,6 @@ static int __bond_release_one(struct net_device *bond_dev,
 	if (bond->slave_cnt == 0) {
 		bond_set_carrier(bond);
 		eth_hw_addr_random(bond_dev);
-
-		if (bond_vlan_used(bond)) {
-			pr_warning("%s: Warning: clearing HW address of %s while it still has VLANs.\n",
-				   bond_dev->name, bond_dev->name);
-			pr_warning("%s: When re-adding slaves, make sure the bond's HW address matches its VLANs'.\n",
-				   bond_dev->name);
-		}
 	}
 
 	write_unlock_bh(&bond->lock);
@@ -4379,13 +4365,6 @@ static void bond_setup(struct net_device *bond_dev)
 	bond_dev->flags |= IFF_MASTER|IFF_MULTICAST;
 	bond_dev->priv_flags |= IFF_BONDING;
 	bond_dev->priv_flags &= ~(IFF_XMIT_DST_RELEASE | IFF_TX_SKB_SHARING);
-
-	/* At first, we block adding VLANs. That's the only way to
-	 * prevent problems that occur when adding VLANs over an
-	 * empty bond. The block will be removed once non-challenged
-	 * slaves are enslaved.
-	 */
-	bond_dev->features |= NETIF_F_VLAN_CHALLENGED;
 
 	/* don't acquire bond device's netif_tx_lock when
 	 * transmitting */

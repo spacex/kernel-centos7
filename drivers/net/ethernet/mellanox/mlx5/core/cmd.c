@@ -465,7 +465,7 @@ static void dump_command(struct mlx5_core_dev *dev,
 	struct mlx5_cmd_msg *msg = input ? ent->in : ent->out;
 	struct mlx5_cmd_mailbox *next = msg->next;
 	int data_only;
-	int offset = 0;
+	u32 offset = 0;
 	int dump_len;
 
 	data_only = !!(mlx5_core_debug_mask & (1 << MLX5_CMD_DATA));
@@ -621,8 +621,8 @@ static int wait_func(struct mlx5_core_dev *dev, struct mlx5_cmd_work_ent *ent)
 			       mlx5_command_str(msg_to_opcode(ent->in)),
 			       msg_to_opcode(ent->in));
 	}
-	mlx5_core_dbg(dev, "err %d, delivery status %s(%d)\n", err,
-		      deliv_status_to_str(ent->status), ent->status);
+	mlx5_core_dbg(dev, "err %d, delivery status %s(%d)\n",
+		      err, deliv_status_to_str(ent->status), ent->status);
 
 	return err;
 }

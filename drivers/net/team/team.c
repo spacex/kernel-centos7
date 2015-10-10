@@ -629,6 +629,7 @@ static int team_change_mode(struct team *team, const char *kind)
 static void team_notify_peers_work(struct work_struct *work)
 {
 	struct team *team;
+	int val;
 
 	team = container_of(work, struct team, notify_peers.dw.work);
 
@@ -636,9 +637,14 @@ static void team_notify_peers_work(struct work_struct *work)
 		schedule_delayed_work(&team->notify_peers.dw, 0);
 		return;
 	}
+	val = atomic_dec_if_positive(&team->notify_peers.count_pending);
+	if (val < 0) {
+		rtnl_unlock();
+		return;
+	}
 	call_netdevice_notifiers(NETDEV_NOTIFY_PEERS, team->dev);
 	rtnl_unlock();
-	if (!atomic_dec_and_test(&team->notify_peers.count_pending))
+	if (val)
 		schedule_delayed_work(&team->notify_peers.dw,
 				      msecs_to_jiffies(team->notify_peers.interval));
 }
@@ -647,7 +653,7 @@ static void team_notify_peers(struct team *team)
 {
 	if (!team->notify_peers.count || !netif_running(team->dev))
 		return;
-	atomic_set(&team->notify_peers.count_pending, team->notify_peers.count);
+	atomic_add(team->notify_peers.count, &team->notify_peers.count_pending);
 	schedule_delayed_work(&team->notify_peers.dw, 0);
 }
 
@@ -669,6 +675,7 @@ static void team_notify_peers_fini(struct team *team)
 static void team_mcast_rejoin_work(struct work_struct *work)
 {
 	struct team *team;
+	int val;
 
 	team = container_of(work, struct team, mcast_rejoin.dw.work);
 
@@ -676,9 +683,14 @@ static void team_mcast_rejoin_work(struct work_struct *work)
 		schedule_delayed_work(&team->mcast_rejoin.dw, 0);
 		return;
 	}
+	val = atomic_dec_if_positive(&team->mcast_rejoin.count_pending);
+	if (val < 0) {
+		rtnl_unlock();
+		return;
+	}
 	call_netdevice_notifiers(NETDEV_RESEND_IGMP, team->dev);
 	rtnl_unlock();
-	if (!atomic_dec_and_test(&team->mcast_rejoin.count_pending))
+	if (val)
 		schedule_delayed_work(&team->mcast_rejoin.dw,
 				      msecs_to_jiffies(team->mcast_rejoin.interval));
 }
@@ -687,7 +699,7 @@ static void team_mcast_rejoin(struct team *team)
 {
 	if (!team->mcast_rejoin.count || !netif_running(team->dev))
 		return;
-	atomic_set(&team->mcast_rejoin.count_pending, team->mcast_rejoin.count);
+	atomic_add(team->mcast_rejoin.count, &team->mcast_rejoin.count_pending);
 	schedule_delayed_work(&team->mcast_rejoin.dw, 0);
 }
 
@@ -1003,7 +1015,6 @@ static int team_port_enter(struct team *team, struct team_port *port)
 	int err = 0;
 
 	dev_hold(team->dev);
-	port->dev->priv_flags |= IFF_TEAM_PORT;
 	if (team->ops.port_enter) {
 		err = team->ops.port_enter(team, port);
 		if (err) {
@@ -1016,7 +1027,6 @@ static int team_port_enter(struct team *team, struct team_port *port)
 	return 0;
 
 err_port_enter:
-	port->dev->priv_flags &= ~IFF_TEAM_PORT;
 	dev_put(team->dev);
 
 	return err;
@@ -1026,7 +1036,6 @@ static void team_port_leave(struct team *team, struct team_port *port)
 {
 	if (team->ops.port_leave)
 		team->ops.port_leave(team, port);
-	port->dev->priv_flags &= ~IFF_TEAM_PORT;
 	dev_put(team->dev);
 }
 
@@ -1083,6 +1092,25 @@ static struct netpoll_info *team_netpoll_info(struct team *team)
 	return NULL;
 }
 #endif
+
+static int team_upper_dev_link(struct net_device *dev,
+			       struct net_device *port_dev)
+{
+	int err;
+
+	err = netdev_master_upper_dev_link(port_dev, dev);
+	if (err)
+		return err;
+	port_dev->priv_flags |= IFF_TEAM_PORT;
+	return 0;
+}
+
+static void team_upper_dev_unlink(struct net_device *dev,
+				  struct net_device *port_dev)
+{
+	netdev_upper_dev_unlink(port_dev, dev);
+	port_dev->priv_flags &= ~IFF_TEAM_PORT;
+}
 
 static void __team_port_change_port_added(struct team_port *port, bool linkup);
 static int team_dev_type_check_change(struct net_device *dev,
@@ -1172,19 +1200,19 @@ static int team_port_add(struct team *team, struct net_device *port_dev)
 		}
 	}
 
-	err = netdev_master_upper_dev_link(port_dev, dev);
-	if (err) {
-		netdev_err(dev, "Device %s failed to set upper link\n",
-			   portname);
-		goto err_set_upper_link;
-	}
-
 	err = netdev_rx_handler_register(port_dev, team_handle_frame,
 					 port);
 	if (err) {
 		netdev_err(dev, "Device %s failed to register rx_handler\n",
 			   portname);
 		goto err_handler_register;
+	}
+
+	err = team_upper_dev_link(dev, port_dev);
+	if (err) {
+		netdev_err(dev, "Device %s failed to set upper link\n",
+			   portname);
+		goto err_set_upper_link;
 	}
 
 	err = __team_option_inst_add_port(team, port);
@@ -1206,12 +1234,12 @@ static int team_port_add(struct team *team, struct net_device *port_dev)
 	return 0;
 
 err_option_port_add:
+	team_upper_dev_unlink(dev, port_dev);
+
+err_set_upper_link:
 	netdev_rx_handler_unregister(port_dev);
 
 err_handler_register:
-	netdev_upper_dev_unlink(port_dev, dev);
-
-err_set_upper_link:
 	team_port_disable_netpoll(port);
 
 err_enable_netpoll:
@@ -1250,8 +1278,8 @@ static int team_port_del(struct team *team, struct net_device *port_dev)
 
 	team_port_disable(team, port);
 	list_del_rcu(&port->list);
+	team_upper_dev_unlink(dev, port_dev);
 	netdev_rx_handler_unregister(port_dev);
-	netdev_upper_dev_unlink(port_dev, dev);
 	team_port_disable_netpoll(port);
 	vlan_vids_del_by_dev(port_dev, dev);
 	dev_uc_unsync(port_dev, dev);
@@ -1734,6 +1762,7 @@ static int team_change_mtu(struct net_device *dev, int new_mtu)
 	 * to traverse list in reverse under rcu_read_lock
 	 */
 	mutex_lock(&team->lock);
+	team->port_mtu_change_allowed = true;
 	list_for_each_entry(port, &team->port_list, list) {
 		err = dev_set_mtu(port->dev, new_mtu);
 		if (err) {
@@ -1742,6 +1771,7 @@ static int team_change_mtu(struct net_device *dev, int new_mtu)
 			goto unwind;
 		}
 	}
+	team->port_mtu_change_allowed = false;
 	mutex_unlock(&team->lock);
 
 	dev->mtu = new_mtu;
@@ -1751,6 +1781,7 @@ static int team_change_mtu(struct net_device *dev, int new_mtu)
 unwind:
 	list_for_each_entry_continue_reverse(port, &team->port_list, list)
 		dev_set_mtu(port->dev, dev->mtu);
+	team->port_mtu_change_allowed = false;
 	mutex_unlock(&team->lock);
 
 	return err;
@@ -2661,7 +2692,7 @@ static int team_nl_cmd_port_list_get(struct sk_buff *skb,
 	return err;
 }
 
-static struct genl_ops team_nl_ops[] = {
+static const struct genl_ops team_nl_ops[] = {
 	{
 		.cmd = TEAM_CMD_NOOP,
 		.doit = team_nl_cmd_noop,
@@ -2687,15 +2718,15 @@ static struct genl_ops team_nl_ops[] = {
 	},
 };
 
-static struct genl_multicast_group team_change_event_mcgrp = {
-	.name = TEAM_GENL_CHANGE_EVENT_MC_GRP_NAME,
+static const struct genl_multicast_group team_nl_mcgrps[] = {
+	{ .name = TEAM_GENL_CHANGE_EVENT_MC_GRP_NAME, },
 };
 
 static int team_nl_send_multicast(struct sk_buff *skb,
 				  struct team *team, u32 portid)
 {
-	return genlmsg_multicast_netns(dev_net(team->dev), skb, 0,
-				       team_change_event_mcgrp.id, GFP_KERNEL);
+	return genlmsg_multicast_netns(&team_nl_family, dev_net(team->dev),
+				       skb, 0, 0, GFP_KERNEL);
 }
 
 static int team_nl_send_event_options_get(struct team *team,
@@ -2714,23 +2745,8 @@ static int team_nl_send_event_port_get(struct team *team,
 
 static int team_nl_init(void)
 {
-	int err;
-
-	err = genl_register_family_with_ops(&team_nl_family, team_nl_ops,
-					    ARRAY_SIZE(team_nl_ops));
-	if (err)
-		return err;
-
-	err = genl_register_mc_group(&team_nl_family, &team_change_event_mcgrp);
-	if (err)
-		goto err_change_event_grp_reg;
-
-	return 0;
-
-err_change_event_grp_reg:
-	genl_unregister_family(&team_nl_family);
-
-	return err;
+	return genl_register_family_with_ops_groups(&team_nl_family, team_nl_ops,
+						    team_nl_mcgrps);
 }
 
 static void team_nl_fini(void)
@@ -2859,8 +2875,10 @@ static int team_device_event(struct notifier_block *unused,
 	case NETDEV_UP:
 		if (netif_carrier_ok(dev))
 			team_port_change_check(port, true);
+		break;
 	case NETDEV_DOWN:
 		team_port_change_check(port, false);
+		break;
 	case NETDEV_CHANGE:
 		if (netif_running(port->dev))
 			team_port_change_check(port,
@@ -2874,7 +2892,9 @@ static int team_device_event(struct notifier_block *unused,
 		break;
 	case NETDEV_CHANGEMTU:
 		/* Forbid to change mtu of underlaying device */
-		return NOTIFY_BAD;
+		if (!port->team->port_mtu_change_allowed)
+			return NOTIFY_BAD;
+		break;
 	case NETDEV_PRE_TYPE_CHANGE:
 		/* Forbid to change type of underlaying device */
 		return NOTIFY_BAD;

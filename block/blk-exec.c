@@ -56,6 +56,7 @@ void blk_execute_rq_nowait(struct request_queue *q, struct gendisk *bd_disk,
 	bool is_pm_resume;
 
 	WARN_ON(irqs_disabled());
+	WARN_ON(rq->cmd_type == REQ_TYPE_FS);
 
 	rq->rq_disk = bd_disk;
 	rq->end_io = done;
@@ -78,9 +79,9 @@ void blk_execute_rq_nowait(struct request_queue *q, struct gendisk *bd_disk,
 	spin_lock_irq(q->queue_lock);
 
 	if (unlikely(blk_queue_dying(q))) {
+		rq->cmd_flags |= REQ_QUIET; 
 		rq->errors = -ENXIO;
-		if (rq->end_io)
-			rq->end_io(rq, rq->errors);
+		__blk_end_request_all(rq, rq->errors);
 		spin_unlock_irq(q->queue_lock);
 		return;
 	}
@@ -131,6 +132,11 @@ int blk_execute_rq(struct request_queue *q, struct gendisk *bd_disk,
 
 	if (rq->errors)
 		err = -EIO;
+
+	if (rq->sense == sense)	{
+		rq->sense = NULL;
+		rq->sense_len = 0;
+	}
 
 	return err;
 }

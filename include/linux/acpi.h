@@ -44,6 +44,21 @@
 #include <acpi/acpi_numa.h>
 #include <asm/acpi.h>
 
+static inline acpi_handle acpi_device_handle(struct acpi_device *adev)
+{
+	return adev ? adev->handle : NULL;
+}
+
+#define ACPI_COMPANION(dev)		((dev)->acpi_node.companion)
+#define ACPI_COMPANION_SET(dev, adev)	ACPI_COMPANION(dev) = (adev)
+#define ACPI_HANDLE(dev)		acpi_device_handle(ACPI_COMPANION(dev))
+
+static inline void acpi_preset_companion(struct device *dev,
+					 struct acpi_device *parent, u64 addr)
+{
+	ACPI_COMPANION_SET(dev, acpi_find_child_device(parent, addr, NULL));
+}
+
 enum acpi_irq_model_id {
 	ACPI_IRQ_MODEL_PIC = 0,
 	ACPI_IRQ_MODEL_IOAPIC,
@@ -238,14 +253,9 @@ extern void acpi_dmi_osi_linux(int enable, const struct dmi_system_id *d);
 extern void acpi_osi_setup(char *str);
 
 #ifdef CONFIG_ACPI_NUMA
-int acpi_get_pxm(acpi_handle handle);
-int acpi_get_node(acpi_handle *handle);
+int acpi_get_node(acpi_handle handle);
 #else
-static inline int acpi_get_pxm(acpi_handle handle)
-{
-	return 0;
-}
-static inline int acpi_get_node(acpi_handle *handle)
+static inline int acpi_get_node(acpi_handle handle)
 {
 	return 0;
 }
@@ -300,6 +310,7 @@ struct acpi_osc_context {
 	struct acpi_buffer ret;		/* free by caller if success */
 };
 
+acpi_status acpi_str_to_uuid(char *str, u8 *uuid);
 acpi_status acpi_run_osc(acpi_handle handle, struct acpi_osc_context *context);
 
 /* Indexes into _OSC Capabilities Buffer (DWORDs 2 & 3 are device-specific) */
@@ -400,6 +411,10 @@ static inline bool acpi_driver_match_device(struct device *dev,
 
 #define acpi_disabled 1
 
+#define ACPI_COMPANION(dev)		(NULL)
+#define ACPI_COMPANION_SET(dev, adev)	do { } while (0)
+#define ACPI_HANDLE(dev)		(NULL)
+
 static inline void acpi_early_init(void) { }
 
 static inline int early_acpi_boot_init(void)
@@ -468,12 +483,21 @@ static inline bool acpi_driver_match_device(struct device *dev,
 
 #endif	/* !CONFIG_ACPI */
 
+#define DEVICE_ACPI_HANDLE(dev)	ACPI_HANDLE(dev)
+
 #ifdef CONFIG_ACPI
 void acpi_os_set_prepare_sleep(int (*func)(u8 sleep_state,
 			       u32 pm1a_ctrl,  u32 pm1b_ctrl));
 
 acpi_status acpi_os_prepare_sleep(u8 sleep_state,
 				  u32 pm1a_control, u32 pm1b_control);
+
+void acpi_os_set_prepare_extended_sleep(int (*func)(u8 sleep_state,
+				        u32 val_a,  u32 val_b));
+
+acpi_status acpi_os_prepare_extended_sleep(u8 sleep_state,
+					   u32 val_a, u32 val_b);
+
 #ifdef CONFIG_X86
 void arch_reserve_mem_area(acpi_physical_address addr, size_t size);
 #else

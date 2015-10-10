@@ -113,9 +113,8 @@
 	{ EXIT_REASON_EOI_INDUCED,           "EOI_INDUCED" }, \
 	{ EXIT_REASON_INVALID_STATE,         "INVALID_STATE" }, \
 	{ EXIT_REASON_INVD,                  "INVD" }, \
+	{ EXIT_REASON_INVVPID,               "INVVPID" }, \
 	{ EXIT_REASON_INVPCID,               "INVPCID" }, \
-	{ EXIT_REASON_PREEMPTION_TIMER,      "PREEMPTION_TIMER" }, \
-	{ EXIT_REASON_INVEPT,                "INVEPT" }, \
-	{ EXIT_REASON_INVVPID,               "INVVPID" }
+	{ EXIT_REASON_PREEMPTION_TIMER,      "PREEMPTION_TIMER" }
 
 #endif /* _UAPIVMX_H */

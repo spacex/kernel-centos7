@@ -597,8 +597,13 @@ xfs_max_file_offset(
 	return (((__uint64_t)pagefactor) << bitshift) - 1;
 }
 
+/*
+ * xfs_set_inode32() and xfs_set_inode64() are passed an agcount
+ * because in the growfs case, mp->m_sb.sb_agcount is not updated
+ * yet to the potentially higher ag count.
+ */
 xfs_agnumber_t
-xfs_set_inode32(struct xfs_mount *mp)
+xfs_set_inode32(struct xfs_mount *mp, xfs_agnumber_t agcount)
 {
 	xfs_agnumber_t	index = 0;
 	xfs_agnumber_t	maxagi = 0;
@@ -620,10 +625,10 @@ xfs_set_inode32(struct xfs_mount *mp)
 		do_div(icount, sbp->sb_agblocks);
 		max_metadata = icount;
 	} else {
-		max_metadata = sbp->sb_agcount;
+		max_metadata = agcount;
 	}
 
-	for (index = 0; index < sbp->sb_agcount; index++) {
+	for (index = 0; index < agcount; index++) {
 		ino = XFS_AGINO_TO_INO(mp, index, agino);
 
 		if (ino > XFS_MAXINUMBER_32) {
@@ -648,11 +653,11 @@ xfs_set_inode32(struct xfs_mount *mp)
 }
 
 xfs_agnumber_t
-xfs_set_inode64(struct xfs_mount *mp)
+xfs_set_inode64(struct xfs_mount *mp, xfs_agnumber_t agcount)
 {
 	xfs_agnumber_t index = 0;
 
-	for (index = 0; index < mp->m_sb.sb_agcount; index++) {
+	for (index = 0; index < agcount; index++) {
 		struct xfs_perag	*pag;
 
 		pag = xfs_perag_get(mp, index);
@@ -842,33 +847,39 @@ STATIC int
 xfs_init_mount_workqueues(
 	struct xfs_mount	*mp)
 {
-	mp->m_data_workqueue = alloc_workqueue("xfs-data/%s",
-			WQ_MEM_RECLAIM, 0, mp->m_fsname);
-	if (!mp->m_data_workqueue)
+	mp->m_buf_workqueue = alloc_workqueue("xfs-buf/%s",
+			WQ_MEM_RECLAIM|WQ_HIGHPRI|WQ_FREEZABLE, 1,
+			mp->m_fsname);
+	if (!mp->m_buf_workqueue)
 		goto out;
 
+	mp->m_data_workqueue = alloc_workqueue("xfs-data/%s",
+			WQ_MEM_RECLAIM|WQ_FREEZABLE, 0, mp->m_fsname);
+	if (!mp->m_data_workqueue)
+		goto out_destroy_buf;
+
 	mp->m_unwritten_workqueue = alloc_workqueue("xfs-conv/%s",
-			WQ_MEM_RECLAIM, 0, mp->m_fsname);
+			WQ_MEM_RECLAIM|WQ_FREEZABLE, 0, mp->m_fsname);
 	if (!mp->m_unwritten_workqueue)
 		goto out_destroy_data_iodone_queue;
 
 	mp->m_cil_workqueue = alloc_workqueue("xfs-cil/%s",
-			WQ_MEM_RECLAIM, 0, mp->m_fsname);
+			WQ_MEM_RECLAIM|WQ_FREEZABLE, 0, mp->m_fsname);
 	if (!mp->m_cil_workqueue)
 		goto out_destroy_unwritten;
 
 	mp->m_reclaim_workqueue = alloc_workqueue("xfs-reclaim/%s",
-			WQ_NON_REENTRANT, 0, mp->m_fsname);
+			WQ_NON_REENTRANT|WQ_FREEZABLE, 0, mp->m_fsname);
 	if (!mp->m_reclaim_workqueue)
 		goto out_destroy_cil;
 
 	mp->m_log_workqueue = alloc_workqueue("xfs-log/%s",
-			WQ_NON_REENTRANT, 0, mp->m_fsname);
+			WQ_NON_REENTRANT|WQ_FREEZABLE, 0, mp->m_fsname);
 	if (!mp->m_log_workqueue)
 		goto out_destroy_reclaim;
 
 	mp->m_eofblocks_workqueue = alloc_workqueue("xfs-eofblocks/%s",
-			WQ_NON_REENTRANT, 0, mp->m_fsname);
+			WQ_NON_REENTRANT|WQ_FREEZABLE, 0, mp->m_fsname);
 	if (!mp->m_eofblocks_workqueue)
 		goto out_destroy_log;
 
@@ -884,6 +895,8 @@ out_destroy_unwritten:
 	destroy_workqueue(mp->m_unwritten_workqueue);
 out_destroy_data_iodone_queue:
 	destroy_workqueue(mp->m_data_workqueue);
+out_destroy_buf:
+	destroy_workqueue(mp->m_buf_workqueue);
 out:
 	return -ENOMEM;
 }
@@ -898,6 +911,7 @@ xfs_destroy_mount_workqueues(
 	destroy_workqueue(mp->m_cil_workqueue);
 	destroy_workqueue(mp->m_data_workqueue);
 	destroy_workqueue(mp->m_unwritten_workqueue);
+	destroy_workqueue(mp->m_buf_workqueue);
 }
 
 /*
@@ -913,7 +927,7 @@ xfs_flush_inodes(
 	struct super_block	*sb = mp->m_super;
 
 	if (down_read_trylock(&sb->s_umount)) {
-		sync_inodes_sb(sb, jiffies);
+		sync_inodes_sb(sb);
 		up_read(&sb->s_umount);
 	}
 }
@@ -1193,6 +1207,7 @@ xfs_fs_remount(
 	char			*options)
 {
 	struct xfs_mount	*mp = XFS_M(sb);
+	xfs_sb_t		*sbp = &mp->m_sb;
 	substring_t		args[MAX_OPT_ARGS];
 	char			*p;
 	int			error;
@@ -1212,10 +1227,10 @@ xfs_fs_remount(
 			mp->m_flags &= ~XFS_MOUNT_BARRIER;
 			break;
 		case Opt_inode64:
-			mp->m_maxagi = xfs_set_inode64(mp);
+			mp->m_maxagi = xfs_set_inode64(mp, sbp->sb_agcount);
 			break;
 		case Opt_inode32:
-			mp->m_maxagi = xfs_set_inode32(mp);
+			mp->m_maxagi = xfs_set_inode32(mp, sbp->sb_agcount);
 			break;
 		default:
 			/*
@@ -1432,11 +1447,11 @@ xfs_fs_fill_super(
 	if (error)
 		goto out_free_fsname;
 
-	error = xfs_init_mount_workqueues(mp);
+	error = -xfs_init_mount_workqueues(mp);
 	if (error)
 		goto out_close_devices;
 
-	error = xfs_icsb_init_counters(mp);
+	error = -xfs_icsb_init_counters(mp);
 	if (error)
 		goto out_destroy_workqueues;
 
@@ -1557,7 +1572,8 @@ static struct file_system_type xfs_fs_type = {
 	.name			= "xfs",
 	.mount			= xfs_fs_mount,
 	.kill_sb		= kill_block_super,
-	.fs_flags		= FS_REQUIRES_DEV,
+	.fs_flags		= FS_REQUIRES_DEV | FS_HAS_RM_XQUOTA |
+				  FS_HAS_INVALIDATE_RANGE,
 };
 MODULE_ALIAS_FS("xfs");
 
@@ -1716,7 +1732,8 @@ xfs_init_workqueues(void)
 	 * AGs in all the filesystems mounted. Hence use the default large
 	 * max_active value for this workqueue.
 	 */
-	xfs_alloc_wq = alloc_workqueue("xfsalloc", WQ_MEM_RECLAIM, 0);
+	xfs_alloc_wq = alloc_workqueue("xfsalloc",
+			WQ_MEM_RECLAIM|WQ_FREEZABLE, 0);
 	if (!xfs_alloc_wq)
 		return -ENOMEM;
 

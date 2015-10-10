@@ -43,6 +43,7 @@
 #define BTRFS_INODE_COPY_EVERYTHING		8
 #define BTRFS_INODE_IN_DELALLOC_LIST		9
 #define BTRFS_INODE_READDIO_NEED_LOCK		10
+#define BTRFS_INODE_HAS_PROPS		        11
 
 /* in memory btrfs inode */
 struct btrfs_inode {
@@ -108,14 +109,17 @@ struct btrfs_inode {
 	u64 last_trans;
 
 	/*
-	 * log transid when this inode was last modified
-	 */
-	u64 last_sub_trans;
-
-	/*
 	 * transid that last logged this inode
 	 */
 	u64 logged_trans;
+
+	/*
+	 * log transid when this inode was last modified
+	 */
+	int last_sub_trans;
+
+	/* a local copy of root's last_log_commit */
+	int last_log_commit;
 
 	/* total number of bytes pending delalloc, used by stat to calc the
 	 * real block usage of the file
@@ -135,6 +139,9 @@ struct btrfs_inode {
 	 */
 	u64 index_cnt;
 
+	/* Cache the directory index number to speed the dir/file remove */
+	u64 dir_index;
+
 	/* the fsync log has some corner cases that mean we have to check
 	 * directories to see if any unlinks have been done before
 	 * the directory was logged.  See tree-log.c for all the
@@ -150,9 +157,6 @@ struct btrfs_inode {
 
 	/* flags field from the on disk inode */
 	u32 flags;
-
-	/* a local copy of root's last_log_commit */
-	unsigned long last_log_commit;
 
 	/*
 	 * Counters to keep track of the number of extent item's we may use due
@@ -279,5 +283,7 @@ static inline void btrfs_inode_resume_unlocked_dio(struct inode *inode)
 	clear_bit(BTRFS_INODE_READDIO_NEED_LOCK,
 		  &BTRFS_I(inode)->runtime_flags);
 }
+
+bool btrfs_page_exists_in_range(struct inode *inode, loff_t start, loff_t end);
 
 #endif

@@ -14,7 +14,7 @@
 #include "net_driver.h"
 #include "filter.h"
 
-/* Solarstorm controllers use BAR 0 for I/O space and BAR 2(&3) for memory */
+/* All controllers use BAR 0 for I/O space and BAR 2(&3) for memory */
 #define EFX_MEM_BAR 2
 
 /* TX */
@@ -65,6 +65,9 @@ void efx_schedule_slow_fill(struct efx_rx_queue *rx_queue);
  */
 #define EFX_RXQ_MIN_ENT		128U
 #define EFX_TXQ_MIN_ENT(efx)	(2 * efx_tx_max_skb_descs(efx))
+
+#define EFX_TXQ_MAX_ENT(efx)	(EFX_WORKAROUND_35388(efx) ? \
+				 EFX_MAX_DMAQ_SIZE / 2 : EFX_MAX_DMAQ_SIZE)
 
 /* Filters */
 
@@ -191,10 +194,15 @@ int efx_init_irq_moderation(struct efx_nic *efx, unsigned int tx_usecs,
 			    bool rx_may_override_tx);
 void efx_get_irq_moderation(struct efx_nic *efx, unsigned int *tx_usecs,
 			    unsigned int *rx_usecs, bool *rx_adaptive);
+void efx_stop_eventq(struct efx_channel *channel);
+void efx_start_eventq(struct efx_channel *channel);
 
 /* Dummy PHY ops for PHY drivers */
 int efx_port_dummy_op_int(struct efx_nic *efx);
 void efx_port_dummy_op_void(struct efx_nic *efx);
+
+/* Update the generic software stats in the passed stats array */
+void efx_update_sw_stats(struct efx_nic *efx, u64 *stats);
 
 /* MTD */
 #ifdef CONFIG_SFC_MTD

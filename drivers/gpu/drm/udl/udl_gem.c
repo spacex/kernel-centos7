@@ -60,7 +60,7 @@ int udl_dumb_create(struct drm_file *file,
 		    struct drm_device *dev,
 		    struct drm_mode_create_dumb *args)
 {
-	args->pitch = args->width * ((args->bpp + 1) / 8);
+	args->pitch = args->width * DIV_ROUND_UP(args->bpp, 8);
 	args->size = args->pitch * args->height;
 	return udl_gem_create(file, dev,
 			      args->size, &args->handle);
@@ -105,13 +105,6 @@ int udl_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	default:
 		return VM_FAULT_SIGBUS;
 	}
-}
-
-int udl_gem_init_object(struct drm_gem_object *obj)
-{
-	BUG();
-
-	return 0;
 }
 
 static int udl_gem_get_pages(struct udl_gem_object *obj, gfp_t gfpmask)

@@ -131,5 +131,10 @@ int ocrdma_qp_state_change(struct ocrdma_qp *, enum ib_qp_state new_state,
 bool ocrdma_is_qp_in_sq_flushlist(struct ocrdma_cq *, struct ocrdma_qp *);
 bool ocrdma_is_qp_in_rq_flushlist(struct ocrdma_cq *, struct ocrdma_qp *);
 void ocrdma_flush_qp(struct ocrdma_qp *);
+int ocrdma_get_irq(struct ocrdma_dev *dev, struct ocrdma_eq *eq);
+
+int ocrdma_mbx_rdma_stats(struct ocrdma_dev *, bool reset);
+char *port_speed_string(struct ocrdma_dev *dev);
+void ocrdma_init_service_level(struct ocrdma_dev *);
 
 #endif				/* __OCRDMA_HW_H__ */

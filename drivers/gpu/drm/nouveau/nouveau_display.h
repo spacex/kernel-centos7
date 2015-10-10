@@ -36,6 +36,7 @@ struct nouveau_display {
 	int  (*init)(struct drm_device *);
 	void (*fini)(struct drm_device *);
 
+	struct nouveau_object *core;
 	struct nouveau_eventh **vblank;
 
 	struct drm_property *dithering_mode;
@@ -58,11 +59,14 @@ int  nouveau_display_create(struct drm_device *dev);
 void nouveau_display_destroy(struct drm_device *dev);
 int  nouveau_display_init(struct drm_device *dev);
 void nouveau_display_fini(struct drm_device *dev);
-int  nouveau_display_suspend(struct drm_device *dev);
-void nouveau_display_repin(struct drm_device *dev);
-void nouveau_display_resume(struct drm_device *dev);
+int  nouveau_display_suspend(struct drm_device *dev, bool runtime);
+void nouveau_display_resume(struct drm_device *dev, bool runtime);
 int  nouveau_display_vblank_enable(struct drm_device *, int);
 void nouveau_display_vblank_disable(struct drm_device *, int);
+int  nouveau_display_scanoutpos(struct drm_device *, int, unsigned int,
+				int *, int *, ktime_t *, ktime_t *);
+int  nouveau_display_vblstamp(struct drm_device *, int, int *,
+			      struct timeval *, unsigned);
 
 int  nouveau_crtc_page_flip(struct drm_crtc *crtc, struct drm_framebuffer *fb,
 			    struct drm_pending_vblank_event *event,

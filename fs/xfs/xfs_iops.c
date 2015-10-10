@@ -59,8 +59,8 @@ xfs_initxattrs(
 	int			error = 0;
 
 	for (xattr = xattr_array; xattr->name != NULL; xattr++) {
-		error = xfs_attr_set(ip, xattr->name, xattr->value,
-				     xattr->value_len, ATTR_SECURE);
+		error = -xfs_attr_set(ip, xattr->name, xattr->value,
+				      xattr->value_len, ATTR_SECURE);
 		if (error < 0)
 			break;
 	}
@@ -80,8 +80,8 @@ xfs_init_security(
 	struct inode	*dir,
 	const struct qstr *qstr)
 {
-	return security_inode_init_security(inode, dir, qstr,
-					    &xfs_initxattrs, NULL);
+	return -security_inode_init_security(inode, dir, qstr,
+					     &xfs_initxattrs, NULL);
 }
 
 static void
@@ -1030,12 +1030,12 @@ xfs_vn_fiemap(
 		return error;
 
 	/* Set up bmap header for xfs internal routine */
-	bm.bmv_offset = BTOBB(start);
+	bm.bmv_offset = BTOBBT(start);
 	/* Special case for whole file */
 	if (length == FIEMAP_MAX_OFFSET)
 		bm.bmv_length = -1LL;
 	else
-		bm.bmv_length = BTOBB(length);
+		bm.bmv_length = BTOBB(start + length) - bm.bmv_offset;
 
 	/* We add one because in getbmap world count includes the header */
 	bm.bmv_count = !fieinfo->fi_extents_max ? MAXEXTNUM :

@@ -9,12 +9,15 @@
 #include <linux/seq_file.h>
 #include <scsi/scsi.h>
 
+#include <linux/rh_kabi.h>
+
 struct request_queue;
 struct block_device;
 struct completion;
 struct module;
 struct scsi_cmnd;
 struct scsi_device;
+struct scsi_host_cmd_pool;
 struct scsi_target;
 struct Scsi_Host;
 struct scsi_host_cmd_pool;
@@ -530,16 +533,18 @@ struct scsi_host_template {
 	 * The following padding has been inserted before ABI freeze to
 	 * allow extending the structure while preserve ABI.
 	 */
-	void			(*rh_reserved1)(void);
-	void			(*rh_reserved2)(void);
-	void			(*rh_reserved3)(void);
-	void			(*rh_reserved4)(void);
+	RH_KABI_RESERVE_P(1)
+	RH_KABI_RESERVE_P(2)
+	RH_KABI_RESERVE_P(3)
+	RH_KABI_RESERVE_P(4)
 
-	unsigned int scsi_mq_reserved1;
+	/*
+	 * Additional per-command data allocated for the driver.
+	 */
+	RH_KABI_REPLACE(unsigned int scsi_mq_reserved1, unsigned int cmd_size)
 	unsigned int scsi_mq_reserved2;
-	void *scsi_mq_reserved3;
+	RH_KABI_REPLACE(void *scsi_mq_reserved3, struct scsi_host_cmd_pool *cmd_pool)
 	void *scsi_mq_reserved4;
-
 };
 
 /*
@@ -774,12 +779,12 @@ struct Scsi_Host {
 	 * The following padding has been inserted before ABI freeze to
 	 * allow extending the structure while preserve ABI.
 	 */
-	void			(*rh_reserved1)(void);
-	void			(*rh_reserved2)(void);
-	void			(*rh_reserved3)(void);
-	void			(*rh_reserved4)(void);
-	void			(*rh_reserved5)(void);
-	void			(*rh_reserved6)(void);
+	RH_KABI_RESERVE_P(1)
+	RH_KABI_RESERVE_P(2)
+	RH_KABI_RESERVE_P(3)
+	RH_KABI_RESERVE_P(4)
+	RH_KABI_RESERVE_P(5)
+	RH_KABI_RESERVE_P(6)
 
 	unsigned int scsi_mq_reserved1;
 	unsigned int scsi_mq_reserved2;

@@ -1531,7 +1531,7 @@ static void fib6_clean_tree(struct net *net, struct fib6_node *root,
 }
 
 void fib6_clean_all(struct net *net, int (*func)(struct rt6_info *, void *arg),
-		    int prune, void *arg)
+		    void *arg)
 {
 	struct fib6_table *table;
 	struct hlist_head *head;
@@ -1543,7 +1543,7 @@ void fib6_clean_all(struct net *net, int (*func)(struct rt6_info *, void *arg),
 		hlist_for_each_entry_rcu(table, head, tb6_hlist) {
 			write_lock_bh(&table->tb6_lock);
 			fib6_clean_tree(net, &table->tb6_root,
-					func, prune, arg);
+					func, 0, arg);
 			write_unlock_bh(&table->tb6_lock);
 		}
 	}
@@ -1564,6 +1564,24 @@ static void fib6_prune_clones(struct net *net, struct fib6_node *fn,
 			      struct rt6_info *rt)
 {
 	fib6_clean_tree(net, fn, fib6_prune_clone, 1, rt);
+}
+
+static int fib6_update_sernum(struct rt6_info *rt, void *arg)
+{
+	__u32 sernum = *(__u32 *)arg;
+
+	if (rt->rt6i_node &&
+	    rt->rt6i_node->fn_sernum != sernum)
+		rt->rt6i_node->fn_sernum = sernum;
+
+	return 0;
+}
+
+static void fib6_flush_trees(struct net *net)
+{
+	__u32 new_sernum = fib6_new_sernum();
+
+	fib6_clean_all(net, fib6_update_sernum, &new_sernum);
 }
 
 /*
@@ -1638,7 +1656,7 @@ void fib6_run_gc(unsigned long expires, struct net *net)
 
 	gc_args.more = icmp6_dst_gc();
 
-	fib6_clean_all(net, fib6_age, 0, NULL);
+	fib6_clean_all(net, fib6_age, NULL);
 
 	if (gc_args.more)
 		mod_timer(&net->ipv6.ip6_fib_timer,
@@ -1748,6 +1766,8 @@ int __init fib6_init(void)
 			      NULL);
 	if (ret)
 		goto out_unregister_subsys;
+
+	__fib6_flush_trees = fib6_flush_trees;
 out:
 	return ret;
 

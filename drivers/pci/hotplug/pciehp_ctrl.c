@@ -233,7 +233,8 @@ static int board_added(struct slot *p_slot)
 	if (retval) {
 		ctrl_err(ctrl, "Cannot add device at %04x:%02x:00\n",
 			 pci_domain_nr(parent), parent->number);
-		goto err_exit;
+		if (retval != -EEXIST)
+			goto err_exit;
 	}
 
 	pciehp_green_led_on(p_slot);
@@ -398,11 +399,10 @@ static void handle_button_press_event(struct slot *p_slot)
 		 */
 		ctrl_info(ctrl, "Button cancel on Slot(%s)\n", slot_name(p_slot));
 		cancel_delayed_work(&p_slot->work);
-		if (p_slot->state == BLINKINGOFF_STATE) {
+		if (p_slot->state == BLINKINGOFF_STATE)
 			pciehp_green_led_on(p_slot);
-		} else {
+		else
 			pciehp_green_led_off(p_slot);
-		}
 		pciehp_set_attention_status(p_slot, 0);
 		ctrl_info(ctrl, "PCI slot #%s - action canceled "
 			  "due to button press\n", slot_name(p_slot));
@@ -534,9 +534,16 @@ static void interrupt_event_handler(struct work_struct *work)
 		pciehp_green_led_off(p_slot);
 		break;
 	case INT_PRESENCE_ON:
-	case INT_PRESENCE_OFF:
 		if (!HP_SUPR_RM(ctrl))
 			break;
+		ctrl_dbg(ctrl, "Surprise Insertion\n");
+		handle_surprise_event(p_slot);
+		break;
+	case INT_PRESENCE_OFF:
+		/*
+		 * Regardless of surprise capability, we need to
+		 * definitely remove a card that has been pulled out!
+		 */
 		ctrl_dbg(ctrl, "Surprise Removal\n");
 		handle_surprise_event(p_slot);
 		break;
@@ -587,9 +594,9 @@ int pciehp_enable_slot(struct slot *p_slot)
 	pciehp_get_latch_status(p_slot, &getstatus);
 
 	rc = board_added(p_slot);
-	if (rc) {
+	if (rc)
 		pciehp_get_latch_status(p_slot, &getstatus);
-	}
+
 	return rc;
 }
 

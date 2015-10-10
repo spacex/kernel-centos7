@@ -42,7 +42,7 @@ nvaf_devinit_disable(struct nouveau_devinit *devinit)
 	if (!(r00154c & 0x00000020))
 		disable |= (1ULL << NVDEV_ENGINE_BSP);
 	if (!(r00154c & 0x00000040))
-		disable |= (1ULL << NVDEV_ENGINE_UNK1C1);
+		disable |= (1ULL << NVDEV_ENGINE_VIC);
 	if (!(r00154c & 0x00000200))
 		disable |= (1ULL << NVDEV_ENGINE_COPY0);
 

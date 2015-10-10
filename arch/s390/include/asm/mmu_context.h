@@ -29,26 +29,23 @@ static inline int init_new_context(struct task_struct *tsk,
 
 #define destroy_context(mm)             do { } while (0)
 
-#ifndef CONFIG_64BIT
-#define LCTL_OPCODE "lctl"
-#else
-#define LCTL_OPCODE "lctlg"
-#endif
+static inline void update_primary_asce(struct task_struct *tsk)
+{
+	unsigned long asce;
+
+	__ctl_store(asce, 1, 1);
+	if (asce != S390_lowcore.kernel_asce)
+		__ctl_load(S390_lowcore.kernel_asce, 1, 1);
+	set_tsk_thread_flag(tsk, TIF_ASCE);
+}
 
 static inline void update_mm(struct mm_struct *mm, struct task_struct *tsk)
 {
 	pgd_t *pgd = mm->pgd;
 
 	S390_lowcore.user_asce = mm->context.asce_bits | __pa(pgd);
-	if (s390_user_mode != HOME_SPACE_MODE) {
-		/* Load primary space page table origin. */
-		asm volatile(LCTL_OPCODE" 1,1,%0\n"
-			     : : "m" (S390_lowcore.user_asce) );
-	} else
-		/* Load home space page table origin. */
-		asm volatile(LCTL_OPCODE" 13,13,%0"
-			     : : "m" (S390_lowcore.user_asce) );
 	set_fs(current->thread.mm_segment);
+	update_primary_asce(tsk);
 }
 
 static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,

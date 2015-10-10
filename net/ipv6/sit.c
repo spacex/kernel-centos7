@@ -622,7 +622,7 @@ static int ipip6_rcv(struct sk_buff *skb)
 		tstats->rx_bytes += skb->len;
 
 		if (tunnel->net != dev_net(tunnel->dev))
-			skb_scrub_packet(skb);
+			skb_scrub_packet(skb, true);
 		netif_rx(skb);
 
 		return 0;
@@ -859,7 +859,7 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 	}
 
 	if (tunnel->net != dev_net(dev))
-		skb_scrub_packet(skb);
+		skb_scrub_packet(skb, true);
 
 	/*
 	 * Okay, now see if we can stuff it in the buffer as-is.
@@ -892,7 +892,7 @@ static netdev_tx_t ipip6_tunnel_xmit(struct sk_buff *skb,
 		goto out;
 	}
 
-	err = iptunnel_xmit(dev_net(dev), rt, skb, fl4.saddr, fl4.daddr,
+	err = iptunnel_xmit(skb->sk, rt, skb, fl4.saddr, fl4.daddr,
 			    IPPROTO_IPV6, tos, ttl, df);
 	iptunnel_xmit_stats(err, &dev->stats, dev->tstats);
 	return NETDEV_TX_OK;

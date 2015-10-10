@@ -41,7 +41,7 @@
 bool pciehp_debug;
 bool pciehp_poll_mode;
 int pciehp_poll_time;
-bool pciehp_force;
+static bool pciehp_force;
 
 #define DRIVER_VERSION	"0.4"
 #define DRIVER_AUTHOR	"Dan Zink <dan.zink@compaq.com>, Greg Kroah-Hartman <greg@kroah.com>, Dely Sy <dely.l.sy@intel.com>"
@@ -108,6 +108,7 @@ static int init_slot(struct controller *ctrl)
 	ops = kzalloc(sizeof(*ops), GFP_KERNEL);
 	if (!ops)
 		goto out;
+
 	ops->enable_slot = enable_slot;
 	ops->disable_slot = disable_slot;
 	ops->get_power_status = get_power_status;

@@ -83,12 +83,12 @@ MODULE_PARM_DESC(ql4xsess_recovery_tmo,
 		" Target Session Recovery Timeout.\n"
 		"\t\t  Default: 120 sec.");
 
-int ql4xmdcapmask = 0x1F;
+int ql4xmdcapmask = 0;
 module_param(ql4xmdcapmask, int, S_IRUGO);
 MODULE_PARM_DESC(ql4xmdcapmask,
 		 " Set the Minidump driver capture mask level.\n"
-		 "\t\t  Default is 0x1F.\n"
-		 "\t\t  Can be set to 0x3, 0x7, 0xF, 0x1F, 0x3F, 0x7F");
+		 "\t\t  Default is 0 (firmware default capture mask)\n"
+		 "\t\t  Can be set to 0x3, 0x7, 0xF, 0x1F, 0x3F, 0x7F, 0xFF");
 
 int ql4xenablemd = 1;
 module_param(ql4xenablemd, int, S_IRUGO | S_IWUSR);
@@ -151,6 +151,7 @@ static int qla4xxx_get_chap_list(struct Scsi_Host *shost, uint16_t chap_tbl_idx,
 static int qla4xxx_delete_chap(struct Scsi_Host *shost, uint16_t chap_tbl_idx);
 static int qla4xxx_set_chap_entry(struct Scsi_Host *shost, void  *data,
 				  int len);
+static int qla4xxx_get_host_stats(struct Scsi_Host *shost, char *buf, int len);
 
 /*
  * SCSI host template entry points
@@ -262,6 +263,7 @@ static struct iscsi_transport qla4xxx_iscsi_transport = {
 	.login_flashnode	= qla4xxx_sysfs_ddb_login,
 	.logout_flashnode	= qla4xxx_sysfs_ddb_logout,
 	.logout_flashnode_sid	= qla4xxx_sysfs_ddb_logout_sid,
+	.get_host_stats		= qla4xxx_get_host_stats,
 };
 
 static struct scsi_transport_template *qla4xxx_scsi_transport;
@@ -419,6 +421,7 @@ static umode_t qla4_attr_is_visible(int param_type, int param)
 		case ISCSI_PARAM_EXP_STATSN:
 		case ISCSI_PARAM_DISCOVERY_PARENT_IDX:
 		case ISCSI_PARAM_DISCOVERY_PARENT_TYPE:
+		case ISCSI_PARAM_LOCAL_IPADDR:
 			return S_IRUGO;
 		default:
 			return 0;
@@ -1011,6 +1014,209 @@ exit_set_chap:
 	return rc;
 }
 
+
+static int qla4xxx_get_host_stats(struct Scsi_Host *shost, char *buf, int len)
+{
+	struct scsi_qla_host *ha = to_qla_host(shost);
+	struct iscsi_offload_host_stats *host_stats = NULL;
+	int host_stats_size;
+	int ret = 0;
+	int ddb_idx = 0;
+	struct ql_iscsi_stats *ql_iscsi_stats = NULL;
+	int stats_size;
+	dma_addr_t iscsi_stats_dma;
+
+	DEBUG2(ql4_printk(KERN_INFO, ha, "Func: %s\n", __func__));
+
+	host_stats_size = sizeof(struct iscsi_offload_host_stats);
+
+	if (host_stats_size != len) {
+		ql4_printk(KERN_INFO, ha, "%s: host_stats size mismatch expected = %d, is = %d\n",
+			   __func__, len, host_stats_size);
+		ret = -EINVAL;
+		goto exit_host_stats;
+	}
+	host_stats = (struct iscsi_offload_host_stats *)buf;
+
+	if (!buf) {
+		ret = -ENOMEM;
+		goto exit_host_stats;
+	}
+
+	stats_size = PAGE_ALIGN(sizeof(struct ql_iscsi_stats));
+
+	ql_iscsi_stats = dma_alloc_coherent(&ha->pdev->dev, stats_size,
+					    &iscsi_stats_dma, GFP_KERNEL);
+	if (!ql_iscsi_stats) {
+		ql4_printk(KERN_ERR, ha,
+			   "Unable to allocate memory for iscsi stats\n");
+		goto exit_host_stats;
+	}
+
+	ret =  qla4xxx_get_mgmt_data(ha, ddb_idx, stats_size,
+				     iscsi_stats_dma);
+	if (ret != QLA_SUCCESS) {
+		ql4_printk(KERN_ERR, ha,
+			   "Unable to retrieve iscsi stats\n");
+		goto exit_host_stats;
+	}
+	host_stats->mactx_frames = le64_to_cpu(ql_iscsi_stats->mac_tx_frames);
+	host_stats->mactx_bytes = le64_to_cpu(ql_iscsi_stats->mac_tx_bytes);
+	host_stats->mactx_multicast_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_multicast_frames);
+	host_stats->mactx_broadcast_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_broadcast_frames);
+	host_stats->mactx_pause_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_pause_frames);
+	host_stats->mactx_control_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_control_frames);
+	host_stats->mactx_deferral =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_deferral);
+	host_stats->mactx_excess_deferral =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_excess_deferral);
+	host_stats->mactx_late_collision =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_late_collision);
+	host_stats->mactx_abort	= le64_to_cpu(ql_iscsi_stats->mac_tx_abort);
+	host_stats->mactx_single_collision =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_single_collision);
+	host_stats->mactx_multiple_collision =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_multiple_collision);
+	host_stats->mactx_collision =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_collision);
+	host_stats->mactx_frames_dropped =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_frames_dropped);
+	host_stats->mactx_jumbo_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_tx_jumbo_frames);
+	host_stats->macrx_frames = le64_to_cpu(ql_iscsi_stats->mac_rx_frames);
+	host_stats->macrx_bytes = le64_to_cpu(ql_iscsi_stats->mac_rx_bytes);
+	host_stats->macrx_unknown_control_frames =
+		le64_to_cpu(ql_iscsi_stats->mac_rx_unknown_control_frames);
+	host_stats->macrx_pause_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_pause_frames);
+	host_stats->macrx_control_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_control_frames);
+	host_stats->macrx_dribble =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_dribble);
+	host_stats->macrx_frame_length_error =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_frame_length_error);
+	host_stats->macrx_jabber = le64_to_cpu(ql_iscsi_stats->mac_rx_jabber);
+	host_stats->macrx_carrier_sense_error =
+		le64_to_cpu(ql_iscsi_stats->mac_rx_carrier_sense_error);
+	host_stats->macrx_frame_discarded =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_frame_discarded);
+	host_stats->macrx_frames_dropped =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_frames_dropped);
+	host_stats->mac_crc_error = le64_to_cpu(ql_iscsi_stats->mac_crc_error);
+	host_stats->mac_encoding_error =
+			le64_to_cpu(ql_iscsi_stats->mac_encoding_error);
+	host_stats->macrx_length_error_large =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_length_error_large);
+	host_stats->macrx_length_error_small =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_length_error_small);
+	host_stats->macrx_multicast_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_multicast_frames);
+	host_stats->macrx_broadcast_frames =
+			le64_to_cpu(ql_iscsi_stats->mac_rx_broadcast_frames);
+	host_stats->iptx_packets = le64_to_cpu(ql_iscsi_stats->ip_tx_packets);
+	host_stats->iptx_bytes = le64_to_cpu(ql_iscsi_stats->ip_tx_bytes);
+	host_stats->iptx_fragments =
+			le64_to_cpu(ql_iscsi_stats->ip_tx_fragments);
+	host_stats->iprx_packets = le64_to_cpu(ql_iscsi_stats->ip_rx_packets);
+	host_stats->iprx_bytes = le64_to_cpu(ql_iscsi_stats->ip_rx_bytes);
+	host_stats->iprx_fragments =
+			le64_to_cpu(ql_iscsi_stats->ip_rx_fragments);
+	host_stats->ip_datagram_reassembly =
+			le64_to_cpu(ql_iscsi_stats->ip_datagram_reassembly);
+	host_stats->ip_invalid_address_error =
+			le64_to_cpu(ql_iscsi_stats->ip_invalid_address_error);
+	host_stats->ip_error_packets =
+			le64_to_cpu(ql_iscsi_stats->ip_error_packets);
+	host_stats->ip_fragrx_overlap =
+			le64_to_cpu(ql_iscsi_stats->ip_fragrx_overlap);
+	host_stats->ip_fragrx_outoforder =
+			le64_to_cpu(ql_iscsi_stats->ip_fragrx_outoforder);
+	host_stats->ip_datagram_reassembly_timeout =
+		le64_to_cpu(ql_iscsi_stats->ip_datagram_reassembly_timeout);
+	host_stats->ipv6tx_packets =
+			le64_to_cpu(ql_iscsi_stats->ipv6_tx_packets);
+	host_stats->ipv6tx_bytes = le64_to_cpu(ql_iscsi_stats->ipv6_tx_bytes);
+	host_stats->ipv6tx_fragments =
+			le64_to_cpu(ql_iscsi_stats->ipv6_tx_fragments);
+	host_stats->ipv6rx_packets =
+			le64_to_cpu(ql_iscsi_stats->ipv6_rx_packets);
+	host_stats->ipv6rx_bytes = le64_to_cpu(ql_iscsi_stats->ipv6_rx_bytes);
+	host_stats->ipv6rx_fragments =
+			le64_to_cpu(ql_iscsi_stats->ipv6_rx_fragments);
+	host_stats->ipv6_datagram_reassembly =
+			le64_to_cpu(ql_iscsi_stats->ipv6_datagram_reassembly);
+	host_stats->ipv6_invalid_address_error =
+		le64_to_cpu(ql_iscsi_stats->ipv6_invalid_address_error);
+	host_stats->ipv6_error_packets =
+			le64_to_cpu(ql_iscsi_stats->ipv6_error_packets);
+	host_stats->ipv6_fragrx_overlap =
+			le64_to_cpu(ql_iscsi_stats->ipv6_fragrx_overlap);
+	host_stats->ipv6_fragrx_outoforder =
+			le64_to_cpu(ql_iscsi_stats->ipv6_fragrx_outoforder);
+	host_stats->ipv6_datagram_reassembly_timeout =
+		le64_to_cpu(ql_iscsi_stats->ipv6_datagram_reassembly_timeout);
+	host_stats->tcptx_segments =
+			le64_to_cpu(ql_iscsi_stats->tcp_tx_segments);
+	host_stats->tcptx_bytes	= le64_to_cpu(ql_iscsi_stats->tcp_tx_bytes);
+	host_stats->tcprx_segments =
+			le64_to_cpu(ql_iscsi_stats->tcp_rx_segments);
+	host_stats->tcprx_byte = le64_to_cpu(ql_iscsi_stats->tcp_rx_byte);
+	host_stats->tcp_duplicate_ack_retx =
+			le64_to_cpu(ql_iscsi_stats->tcp_duplicate_ack_retx);
+	host_stats->tcp_retx_timer_expired =
+			le64_to_cpu(ql_iscsi_stats->tcp_retx_timer_expired);
+	host_stats->tcprx_duplicate_ack	=
+			le64_to_cpu(ql_iscsi_stats->tcp_rx_duplicate_ack);
+	host_stats->tcprx_pure_ackr =
+			le64_to_cpu(ql_iscsi_stats->tcp_rx_pure_ackr);
+	host_stats->tcptx_delayed_ack =
+			le64_to_cpu(ql_iscsi_stats->tcp_tx_delayed_ack);
+	host_stats->tcptx_pure_ack =
+			le64_to_cpu(ql_iscsi_stats->tcp_tx_pure_ack);
+	host_stats->tcprx_segment_error =
+			le64_to_cpu(ql_iscsi_stats->tcp_rx_segment_error);
+	host_stats->tcprx_segment_outoforder =
+			le64_to_cpu(ql_iscsi_stats->tcp_rx_segment_outoforder);
+	host_stats->tcprx_window_probe =
+			le64_to_cpu(ql_iscsi_stats->tcp_rx_window_probe);
+	host_stats->tcprx_window_update =
+			le64_to_cpu(ql_iscsi_stats->tcp_rx_window_update);
+	host_stats->tcptx_window_probe_persist =
+		le64_to_cpu(ql_iscsi_stats->tcp_tx_window_probe_persist);
+	host_stats->ecc_error_correction =
+			le64_to_cpu(ql_iscsi_stats->ecc_error_correction);
+	host_stats->iscsi_pdu_tx = le64_to_cpu(ql_iscsi_stats->iscsi_pdu_tx);
+	host_stats->iscsi_data_bytes_tx =
+			le64_to_cpu(ql_iscsi_stats->iscsi_data_bytes_tx);
+	host_stats->iscsi_pdu_rx = le64_to_cpu(ql_iscsi_stats->iscsi_pdu_rx);
+	host_stats->iscsi_data_bytes_rx	=
+			le64_to_cpu(ql_iscsi_stats->iscsi_data_bytes_rx);
+	host_stats->iscsi_io_completed =
+			le64_to_cpu(ql_iscsi_stats->iscsi_io_completed);
+	host_stats->iscsi_unexpected_io_rx =
+			le64_to_cpu(ql_iscsi_stats->iscsi_unexpected_io_rx);
+	host_stats->iscsi_format_error =
+			le64_to_cpu(ql_iscsi_stats->iscsi_format_error);
+	host_stats->iscsi_hdr_digest_error =
+			le64_to_cpu(ql_iscsi_stats->iscsi_hdr_digest_error);
+	host_stats->iscsi_data_digest_error =
+			le64_to_cpu(ql_iscsi_stats->iscsi_data_digest_error);
+	host_stats->iscsi_sequence_error =
+			le64_to_cpu(ql_iscsi_stats->iscsi_sequence_error);
+exit_host_stats:
+	if (ql_iscsi_stats)
+		dma_free_coherent(&ha->pdev->dev, host_stats_size,
+				  ql_iscsi_stats, iscsi_stats_dma);
+
+	ql4_printk(KERN_INFO, ha, "%s: Get host stats done\n",
+		   __func__);
+	return ret;
+}
+
 static int qla4xxx_get_iface_param(struct iscsi_iface *iface,
 				   enum iscsi_param_type param_type,
 				   int param, char *buf)
@@ -1536,6 +1742,9 @@ static int qla4xxx_get_ep_param(struct iscsi_endpoint *ep,
 	struct sockaddr *dst_addr;
 	struct scsi_qla_host *ha;
 
+	if (!qla_ep)
+		return -ENOTCONN;
+
 	ha = to_qla_host(qla_ep->host);
 	DEBUG2(ql4_printk(KERN_INFO, ha, "%s: host: %ld\n", __func__,
 			  ha->host_no));
@@ -1543,9 +1752,6 @@ static int qla4xxx_get_ep_param(struct iscsi_endpoint *ep,
 	switch (param) {
 	case ISCSI_PARAM_CONN_PORT:
 	case ISCSI_PARAM_CONN_ADDRESS:
-		if (!qla_ep)
-			return -ENOTCONN;
-
 		dst_addr = (struct sockaddr *)&qla_ep->dst_addr;
 		if (!dst_addr)
 			return -ENOTCONN;
@@ -2673,7 +2879,6 @@ static int qla4xxx_conn_get_param(struct iscsi_cls_conn *cls_conn,
 	struct iscsi_conn *conn;
 	struct qla_conn *qla_conn;
 	struct sockaddr *dst_addr;
-	int len = 0;
 
 	conn = cls_conn->dd_data;
 	qla_conn = conn->dd_data;
@@ -2687,9 +2892,6 @@ static int qla4xxx_conn_get_param(struct iscsi_cls_conn *cls_conn,
 	default:
 		return iscsi_conn_get_param(cls_conn, param, buf);
 	}
-
-	return len;
-
 }
 
 int qla4xxx_get_ddb_index(struct scsi_qla_host *ha, uint16_t *ddb_index)
@@ -3363,14 +3565,13 @@ static int qla4xxx_copy_from_fwddb_param(struct iscsi_bus_flash_session *sess,
 	if (test_bit(OPT_IPV6_DEVICE, &options)) {
 		conn->ipv6_traffic_class = fw_ddb_entry->ipv4_tos;
 
-		conn->link_local_ipv6_addr = kzalloc(IPv6_ADDR_LEN, GFP_KERNEL);
+		conn->link_local_ipv6_addr = kmemdup(
+					fw_ddb_entry->link_local_ipv6_addr,
+					IPv6_ADDR_LEN, GFP_KERNEL);
 		if (!conn->link_local_ipv6_addr) {
 			rc = -ENOMEM;
 			goto exit_copy;
 		}
-
-		memcpy(conn->link_local_ipv6_addr,
-		       fw_ddb_entry->link_local_ipv6_addr, IPv6_ADDR_LEN);
 	} else {
 		conn->ipv4_tos = fw_ddb_entry->ipv4_tos;
 	}
@@ -3509,6 +3710,7 @@ static void qla4xxx_copy_to_sess_conn_params(struct iscsi_conn *conn,
 	unsigned long options = 0;
 	uint16_t ddb_link;
 	uint16_t disc_parent;
+	char ip_addr[DDB_IPADDR_LEN];
 
 	options = le16_to_cpu(fw_ddb_entry->options);
 	conn->is_fw_assigned_ipv6 = test_bit(OPT_IS_FW_ASSIGNED_IPV6, &options);
@@ -3590,6 +3792,14 @@ static void qla4xxx_copy_to_sess_conn_params(struct iscsi_conn *conn,
 
 	iscsi_set_param(conn->cls_conn, ISCSI_PARAM_TARGET_ALIAS,
 			(char *)fw_ddb_entry->iscsi_alias, 0);
+
+	options = le16_to_cpu(fw_ddb_entry->options);
+	if (options & DDB_OPT_IPV6_DEVICE) {
+		memset(ip_addr, 0, sizeof(ip_addr));
+		sprintf(ip_addr, "%pI6", fw_ddb_entry->link_local_ipv6_addr);
+		iscsi_set_param(conn->cls_conn, ISCSI_PARAM_LOCAL_IPADDR,
+				(char *)ip_addr, 0);
+	}
 }
 
 static void qla4xxx_copy_fwddb_param(struct scsi_qla_host *ha,
@@ -4350,6 +4560,7 @@ static void qla4xxx_timer(struct scsi_qla_host *ha)
 	     test_bit(DPC_LINK_CHANGED, &ha->dpc_flags) ||
 	     test_bit(DPC_HA_UNRECOVERABLE, &ha->dpc_flags) ||
 	     test_bit(DPC_HA_NEED_QUIESCENT, &ha->dpc_flags) ||
+	     test_bit(DPC_SYSFS_DDB_EXPORT, &ha->dpc_flags) ||
 	     test_bit(DPC_AEN, &ha->dpc_flags)) {
 		DEBUG2(printk("scsi%ld: %s: scheduling dpc routine"
 			      " - dpc flags = 0x%lx\n",
@@ -5216,6 +5427,11 @@ dpc_post_reset_ha:
 			} else
 				qla4xxx_relogin_all_devices(ha);
 		}
+	}
+	if (test_and_clear_bit(DPC_SYSFS_DDB_EXPORT, &ha->dpc_flags)) {
+		if (qla4xxx_sysfs_ddb_export(ha))
+			ql4_printk(KERN_ERR, ha, "%s: Error exporting ddb to sysfs\n",
+				   __func__);
 	}
 }
 
@@ -8194,7 +8410,7 @@ exit_ddb_del:
  *
  * Export the firmware DDB for all send targets and normal targets to sysfs.
  **/
-static int qla4xxx_sysfs_ddb_export(struct scsi_qla_host *ha)
+int qla4xxx_sysfs_ddb_export(struct scsi_qla_host *ha)
 {
 	struct dev_db_entry *fw_ddb_entry = NULL;
 	dma_addr_t fw_ddb_entry_dma;
@@ -8460,6 +8676,9 @@ static int qla4xxx_probe_adapter(struct pci_dev *pdev,
 	mutex_init(&ha->chap_sem);
 	init_completion(&ha->mbx_intr_comp);
 	init_completion(&ha->disable_acb_comp);
+	init_completion(&ha->idc_comp);
+	init_completion(&ha->link_up_comp);
+	init_completion(&ha->disable_acb_comp);
 
 	spin_lock_init(&ha->hardware_lock);
 	spin_lock_init(&ha->work_lock);
@@ -8629,11 +8848,8 @@ skip_retry_init:
 		ql4_printk(KERN_ERR, ha,
 			   "%s: No iSCSI boot target configured\n", __func__);
 
-	if (qla4xxx_sysfs_ddb_export(ha))
-		ql4_printk(KERN_ERR, ha,
-			   "%s: Error exporting ddb to sysfs\n", __func__);
-
-		/* Perform the build ddb list and login to each */
+	set_bit(DPC_SYSFS_DDB_EXPORT, &ha->dpc_flags);
+	/* Perform the build ddb list and login to each */
 	qla4xxx_build_ddb_list(ha, INIT_ADAPTER);
 	iscsi_host_for_each_session(ha->host, qla4xxx_login_flash_ddb);
 	qla4xxx_wait_login_resp_boot_tgt(ha);

@@ -8,6 +8,8 @@
 #include <linux/tick.h>
 #include <linux/slab.h>
 
+#include <linux/rh_kabi.h>
+
 #include "cpupri.h"
 #include "cpuacct.h"
 
@@ -382,6 +384,8 @@ struct root_domain {
 	 */
 	cpumask_var_t rto_mask;
 	struct cpupri cpupri;
+	/* Indicate more than one runnable task for any CPU */
+	RH_KABI_EXTEND(bool overload)
 };
 
 extern struct root_domain def_root_domain;
@@ -1116,15 +1120,20 @@ static inline void inc_nr_running(struct rq *rq)
 {
 	rq->nr_running++;
 
-#ifdef CONFIG_NO_HZ_FULL
 	if (rq->nr_running == 2) {
+#ifdef CONFIG_SMP
+		if (!rq->rd->overload)
+			rq->rd->overload = true;
+#endif
+
+#ifdef CONFIG_NO_HZ_FULL
 		if (tick_nohz_full_cpu(rq->cpu)) {
 			/* Order rq->nr_running write against the IPI */
 			smp_wmb();
 			smp_send_reschedule(rq->cpu);
 		}
-       }
 #endif
+	}
 }
 
 static inline void dec_nr_running(struct rq *rq)

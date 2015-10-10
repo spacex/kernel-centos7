@@ -4,8 +4,11 @@ SUBLEVEL = 0
 EXTRAVERSION =
 NAME = Unicycling Gorilla
 RHEL_MAJOR = 7
-RHEL_MINOR = 0
-RHEL_RELEASE = 123.20.1
+RHEL_MINOR = 1
+RHEL_RELEASE = 229
+RHEL_DRM_VERSION = 3
+RHEL_DRM_PATCHLEVEL = 16
+RHEL_DRM_SUBLEVEL = 7
 
 # *DOCUMENTATION*
 # To see a list of typical targets execute "make help"

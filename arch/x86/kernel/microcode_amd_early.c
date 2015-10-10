@@ -82,7 +82,7 @@ static struct cpio_data __init find_ucode_in_initrd(void)
  * load_microcode_amd() to save equivalent cpu table and microcode patches in
  * kernel heap memory.
  */
-static void __cpuinit apply_ucode_in_initrd(void *ucode, size_t size)
+static void apply_ucode_in_initrd(void *ucode, size_t size)
 {
 	struct equiv_cpu_entry *eq;
 	u32 *header;
@@ -206,7 +206,7 @@ u8 amd_bsp_mpb[MPB_MAX_SIZE];
  * save_microcode_in_initrd_amd() BSP's patch is copied to amd_bsp_mpb, which
  * is used upon resume from suspend.
  */
-void __cpuinit load_ucode_amd_ap(void)
+void load_ucode_amd_ap(void)
 {
 	struct microcode_amd *mc;
 	unsigned long *initrd;
@@ -238,7 +238,7 @@ static void __init collect_cpu_sig_on_bsp(void *arg)
 	uci->cpu_sig.sig = cpuid_eax(0x00000001);
 }
 #else
-void __cpuinit load_ucode_amd_ap(void)
+void load_ucode_amd_ap(void)
 {
 	unsigned int cpu = smp_processor_id();
 	struct ucode_cpu_info *uci = ucode_cpu_info + cpu;

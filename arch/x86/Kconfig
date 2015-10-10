@@ -51,7 +51,6 @@ config X86
 	select HAVE_FUNCTION_TRACER
 	select HAVE_FUNCTION_GRAPH_TRACER
 	select HAVE_FUNCTION_GRAPH_FP_TEST
-	select HAVE_FUNCTION_TRACE_MCOUNT_TEST
 	select HAVE_SYSCALL_TRACEPOINTS
 	select SYSCTL_EXCEPTION_TRACE
 	select HAVE_KVM
@@ -106,6 +105,7 @@ config X86
 	select GENERIC_CMOS_UPDATE
 	select GENERIC_CLOCKEVENTS
 	select ARCH_CLOCKSOURCE_DATA if X86_64
+	select CLOCKSOURCE_VALIDATE_LAST_CYCLE
 	select GENERIC_CLOCKEVENTS_BROADCAST if X86_64 || (X86_32 && X86_LOCAL_APIC)
 	select GENERIC_TIME_VSYSCALL if X86_64
 	select KTIME_SCALAR if X86_32
@@ -247,10 +247,6 @@ config ARCH_HWEIGHT_CFLAGS
 	string
 	default "-fcall-saved-ecx -fcall-saved-edx" if X86_32
 	default "-fcall-saved-rdi -fcall-saved-rsi -fcall-saved-rdx -fcall-saved-rcx -fcall-saved-r8 -fcall-saved-r9 -fcall-saved-r10 -fcall-saved-r11" if X86_64
-
-config ARCH_CPU_PROBE_RELEASE
-	def_bool y
-	depends on HOTPLUG_CPU
 
 config ARCH_SUPPORTS_UPROBES
 	def_bool y
@@ -1652,6 +1648,41 @@ config KEXEC_AUTO_RESERVE
 
 	 On x86_32, 128M is reserved, on x86_64 1/32 of your memory is
 	 reserved, but it will not exceed 4G.
+
+config KEXEC_FILE
+	bool "kexec file based system call"
+	select BUILD_BIN2C
+	depends on KEXEC
+	depends on X86_64
+	depends on CRYPTO=y
+	depends on CRYPTO_SHA256=y
+	---help---
+	  This is new version of kexec system call. This system call is
+	  file based and takes file descriptors as system call argument
+	  for kernel and initramfs as opposed to list of segments as
+	  accepted by previous system call.
+
+config KEXEC_VERIFY_SIG
+	bool "Verify kernel signature during kexec_file_load() syscall"
+	depends on KEXEC_FILE
+	---help---
+	  This option makes kernel signature verification mandatory for
+	  kexec_file_load() syscall. If kernel is signature can not be
+	  verified, kexec_file_load() will fail.
+
+	  This option enforces signature verification at generic level.
+	  One needs to enable signature verification for type of kernel
+	  image being loaded to make sure it works. For example, enable
+	  bzImage signature verification option to be able to load and
+	  verify signatures of bzImage. Otherwise kernel loading will fail.
+
+config KEXEC_BZIMAGE_VERIFY_SIG
+	bool "Enable bzImage signature verification support"
+	depends on KEXEC_VERIFY_SIG
+	depends on SIGNED_PE_FILE_VERIFICATION
+	select SYSTEM_TRUSTED_KEYRING
+	---help---
+	  Enable bzImage signature verification support.
 
 config CRASH_DUMP
 	bool "kernel crash dumps"

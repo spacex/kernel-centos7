@@ -2395,8 +2395,6 @@ int qla4_84xx_config_acb(struct scsi_qla_host *ha, int acb_config)
 		}
 
 		memcpy(acb, ha->saved_acb, acb_len);
-		kfree(ha->saved_acb);
-		ha->saved_acb = NULL;
 
 		rval = qla4xxx_set_acb(ha, &mbox_cmd[0], &mbox_sts[0], acb_dma);
 		if (rval != QLA_SUCCESS)
@@ -2412,8 +2410,55 @@ exit_free_acb:
 	dma_free_coherent(&ha->pdev->dev, sizeof(struct addr_ctrl_blk), acb,
 			  acb_dma);
 exit_config_acb:
+	if ((acb_config == ACB_CONFIG_SET) && ha->saved_acb) {
+		kfree(ha->saved_acb);
+		ha->saved_acb = NULL;
+	}
 	DEBUG2(ql4_printk(KERN_INFO, ha,
 			  "%s %s\n", __func__,
 			  rval == QLA_SUCCESS ? "SUCCEEDED" : "FAILED"));
 	return rval;
+}
+
+int qla4_83xx_get_port_config(struct scsi_qla_host *ha, uint32_t *config)
+{
+	uint32_t mbox_cmd[MBOX_REG_COUNT];
+	uint32_t mbox_sts[MBOX_REG_COUNT];
+	int status;
+
+	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
+	memset(&mbox_sts, 0, sizeof(mbox_sts));
+
+	mbox_cmd[0] = MBOX_CMD_GET_PORT_CONFIG;
+
+	status = qla4xxx_mailbox_command(ha, MBOX_REG_COUNT, MBOX_REG_COUNT,
+					 mbox_cmd, mbox_sts);
+	if (status == QLA_SUCCESS)
+		*config = mbox_sts[1];
+	else
+		ql4_printk(KERN_ERR, ha, "%s: failed status %04X\n", __func__,
+			   mbox_sts[0]);
+
+	return status;
+}
+
+int qla4_83xx_set_port_config(struct scsi_qla_host *ha, uint32_t *config)
+{
+	uint32_t mbox_cmd[MBOX_REG_COUNT];
+	uint32_t mbox_sts[MBOX_REG_COUNT];
+	int status;
+
+	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
+	memset(&mbox_sts, 0, sizeof(mbox_sts));
+
+	mbox_cmd[0] = MBOX_CMD_SET_PORT_CONFIG;
+	mbox_cmd[1] = *config;
+
+	status = qla4xxx_mailbox_command(ha, MBOX_REG_COUNT, MBOX_REG_COUNT,
+				mbox_cmd, mbox_sts);
+	if (status != QLA_SUCCESS)
+		ql4_printk(KERN_ERR, ha, "%s: failed status %04X\n", __func__,
+			   mbox_sts[0]);
+
+	return status;
 }

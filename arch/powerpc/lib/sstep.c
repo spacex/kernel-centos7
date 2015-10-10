@@ -100,8 +100,10 @@ static unsigned long __kprobes dform_ea(unsigned int instr, struct pt_regs *regs
 	ea = (signed short) instr;		/* sign-extend */
 	if (ra) {
 		ea += regs->gpr[ra];
-		if (instr & 0x04000000)		/* update forms */
-			regs->gpr[ra] = ea;
+		if (instr & 0x04000000) {		/* update forms */
+			if ((instr>>26) != 47) 		/* stmw is not an update form */
+				regs->gpr[ra] = ea;
+		}
 	}
 
 	return truncate_if_32bit(regs->msr, ea);
@@ -324,7 +326,7 @@ static int __kprobes write_mem_unaligned(unsigned long val, unsigned long ea,
 		err = write_mem_aligned(val >> (nb - c) * 8, ea, c);
 		if (err)
 			return err;
-		++ea;
+		ea += c;
 	}
 	return 0;
 }
@@ -1196,7 +1198,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 			sh = regs->gpr[rb] & 0x3f;
 			ival = (signed int) regs->gpr[rd];
 			regs->gpr[ra] = ival >> (sh < 32 ? sh : 31);
-			if (ival < 0 && (sh >= 32 || (ival & ((1 << sh) - 1)) != 0))
+			if (ival < 0 && (sh >= 32 || (ival & ((1ul << sh) - 1)) != 0))
 				regs->xer |= XER_CA;
 			else
 				regs->xer &= ~XER_CA;
@@ -1206,7 +1208,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 			sh = rb;
 			ival = (signed int) regs->gpr[rd];
 			regs->gpr[ra] = ival >> sh;
-			if (ival < 0 && (ival & ((1 << sh) - 1)) != 0)
+			if (ival < 0 && (ival & ((1ul << sh) - 1)) != 0)
 				regs->xer |= XER_CA;
 			else
 				regs->xer &= ~XER_CA;
@@ -1214,7 +1216,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 
 #ifdef __powerpc64__
 		case 27:	/* sld */
-			sh = regs->gpr[rd] & 0x7f;
+			sh = regs->gpr[rb] & 0x7f;
 			if (sh < 64)
 				regs->gpr[ra] = regs->gpr[rd] << sh;
 			else
@@ -1233,7 +1235,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 			sh = regs->gpr[rb] & 0x7f;
 			ival = (signed long int) regs->gpr[rd];
 			regs->gpr[ra] = ival >> (sh < 64 ? sh : 63);
-			if (ival < 0 && (sh >= 64 || (ival & ((1 << sh) - 1)) != 0))
+			if (ival < 0 && (sh >= 64 || (ival & ((1ul << sh) - 1)) != 0))
 				regs->xer |= XER_CA;
 			else
 				regs->xer &= ~XER_CA;
@@ -1244,7 +1246,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 			sh = rb | ((instr & 2) << 4);
 			ival = (signed long int) regs->gpr[rd];
 			regs->gpr[ra] = ival >> sh;
-			if (ival < 0 && (ival & ((1 << sh) - 1)) != 0)
+			if (ival < 0 && (ival & ((1ul << sh) - 1)) != 0)
 				regs->xer |= XER_CA;
 			else
 				regs->xer &= ~XER_CA;
@@ -1468,7 +1470,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 				regs->gpr[rd] = byterev_4(val);
 			goto ldst_done;
 
-#ifdef CONFIG_PPC_CPU
+#ifdef CONFIG_PPC_FPU
 		case 535:	/* lfsx */
 		case 567:	/* lfsux */
 			if (!(regs->msr & MSR_FP))

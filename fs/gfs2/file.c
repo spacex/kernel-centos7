@@ -26,6 +26,7 @@
 #include <linux/dlm.h>
 #include <linux/dlm_plock.h>
 #include <linux/aio.h>
+#include <linux/delay.h>
 
 #include "gfs2.h"
 #include "incore.h"
@@ -343,7 +344,8 @@ static void gfs2_size_hint(struct file *filep, loff_t offset, size_t size)
 	size_t blks = (size + sdp->sd_sb.sb_bsize - 1) >> sdp->sd_sb.sb_bsize_shift;
 	int hint = min_t(size_t, INT_MAX, blks);
 
-	atomic_set(&ip->i_res->rs_sizehint, hint);
+	if (hint > atomic_read(&ip->i_res->rs_sizehint))
+		atomic_set(&ip->i_res->rs_sizehint, hint);
 }
 
 /**
@@ -987,9 +989,10 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 	unsigned int state;
 	int flags;
 	int error = 0;
+	int sleeptime;
 
 	state = (fl->fl_type == F_WRLCK) ? LM_ST_EXCLUSIVE : LM_ST_SHARED;
-	flags = (IS_SETLKW(cmd) ? 0 : LM_FLAG_TRY) | GL_EXACT | GL_NOCACHE;
+	flags = (IS_SETLKW(cmd) ? 0 : LM_FLAG_TRY_1CB) | GL_EXACT;
 
 	mutex_lock(&fp->f_fl_mutex);
 
@@ -999,7 +1002,7 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 			goto out;
 		flock_lock_file_wait(file,
 				     &(struct file_lock){.fl_type = F_UNLCK});
-		gfs2_glock_dq_wait(fl_gh);
+		gfs2_glock_dq(fl_gh);
 		gfs2_holder_reinit(state, flags, fl_gh);
 	} else {
 		error = gfs2_glock_get(GFS2_SB(&ip->i_inode), ip->i_no_addr,
@@ -1009,7 +1012,14 @@ static int do_flock(struct file *file, int cmd, struct file_lock *fl)
 		gfs2_holder_init(gl, state, flags, fl_gh);
 		gfs2_glock_put(gl);
 	}
-	error = gfs2_glock_nq(fl_gh);
+	for (sleeptime = 1; sleeptime <= 4; sleeptime <<= 1) {
+		error = gfs2_glock_nq(fl_gh);
+		if (error != GLR_TRYFAILED)
+			break;
+		fl_gh->gh_flags = LM_FLAG_TRY | GL_EXACT;
+		fl_gh->gh_error = 0;
+		msleep(sleeptime);
+	}
 	if (error) {
 		gfs2_holder_uninit(fl_gh);
 		if (error == GLR_TRYFAILED)
@@ -1032,7 +1042,7 @@ static void do_unflock(struct file *file, struct file_lock *fl)
 	mutex_lock(&fp->f_fl_mutex);
 	flock_lock_file_wait(file, fl);
 	if (fl_gh->gh_gl) {
-		gfs2_glock_dq_wait(fl_gh);
+		gfs2_glock_dq(fl_gh);
 		gfs2_holder_uninit(fl_gh);
 	}
 	mutex_unlock(&fp->f_fl_mutex);

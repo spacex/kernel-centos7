@@ -30,7 +30,7 @@
 #include <asm/io.h>
 #include <asm/uaccess.h>
 #include <asm/types.h>
-#include <asm/crash.h>
+#include <asm/crash-driver.h>
 
 #define CRASH_VERSION   "1.1"
 

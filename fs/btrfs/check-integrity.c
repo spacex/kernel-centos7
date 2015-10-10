@@ -92,11 +92,11 @@
 #include <linux/slab.h>
 #include <linux/buffer_head.h>
 #include <linux/mutex.h>
-#include <linux/crc32c.h>
 #include <linux/genhd.h>
 #include <linux/blkdev.h>
 #include "ctree.h"
 #include "disk-io.h"
+#include "hash.h"
 #include "transaction.h"
 #include "extent_io.h"
 #include "volumes.h"
@@ -1093,6 +1093,7 @@ leaf_item_out_of_bounce_error:
 					next_stack =
 					    btrfsic_stack_frame_alloc();
 					if (NULL == next_stack) {
+						sf->error = -1;
 						btrfsic_release_block_ctx(
 								&sf->
 								next_block_ctx);
@@ -1190,8 +1191,10 @@ continue_with_current_node_stack_frame:
 				    sf->next_block_ctx.datav[0];
 
 				next_stack = btrfsic_stack_frame_alloc();
-				if (NULL == next_stack)
+				if (NULL == next_stack) {
+					sf->error = -1;
 					goto one_stack_frame_backwards;
+				}
 
 				next_stack->i = -1;
 				next_stack->block = sf->next_block;
@@ -1456,10 +1459,14 @@ static int btrfsic_handle_extent_data(
 	btrfsic_read_from_block_data(block_ctx, &file_extent_item,
 				     file_extent_item_offset,
 				     sizeof(struct btrfs_file_extent_item));
-	next_bytenr = btrfs_stack_file_extent_disk_bytenr(&file_extent_item) +
-		      btrfs_stack_file_extent_offset(&file_extent_item);
-	generation = btrfs_stack_file_extent_generation(&file_extent_item);
-	num_bytes = btrfs_stack_file_extent_num_bytes(&file_extent_item);
+	next_bytenr = btrfs_stack_file_extent_disk_bytenr(&file_extent_item);
+	if (btrfs_stack_file_extent_compression(&file_extent_item) ==
+	    BTRFS_COMPRESS_NONE) {
+		next_bytenr += btrfs_stack_file_extent_offset(&file_extent_item);
+		num_bytes = btrfs_stack_file_extent_num_bytes(&file_extent_item);
+	} else {
+		num_bytes = btrfs_stack_file_extent_disk_num_bytes(&file_extent_item);
+	}
 	generation = btrfs_stack_file_extent_generation(&file_extent_item);
 
 	if (state->print_mask & BTRFSIC_PRINT_MASK_VERY_VERBOSE)
@@ -1819,7 +1826,7 @@ static int btrfsic_test_for_metadata(struct btrfsic_state *state,
 		size_t sublen = i ? PAGE_CACHE_SIZE :
 				    (PAGE_CACHE_SIZE - BTRFS_CSUM_SIZE);
 
-		crc = crc32c(crc, data, sublen);
+		crc = btrfs_crc32c(crc, data, sublen);
 	}
 	btrfs_csum_final(crc, csum);
 	if (memcmp(csum, h->csum, state->csum_size))

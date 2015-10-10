@@ -355,8 +355,12 @@ static struct ip6_tnl *ip6_tnl_locate(struct net *net,
 	     (t = rtnl_dereference(*tp)) != NULL;
 	     tp = &t->next) {
 		if (ipv6_addr_equal(local, &t->parms.laddr) &&
-		    ipv6_addr_equal(remote, &t->parms.raddr))
+		    ipv6_addr_equal(remote, &t->parms.raddr)) {
+			if (create)
+				return NULL;
+
 			return t;
+		}
 	}
 	if (!create)
 		return NULL;
@@ -829,7 +833,7 @@ static int ip6_tnl_rcv(struct sk_buff *skb, __u16 protocol,
 		tstats->rx_bytes += skb->len;
 
 		if (!net_eq(t->net, dev_net(t->dev)))
-			skb_scrub_packet(skb);
+			skb_scrub_packet(skb, true);
 
 		netif_rx(skb);
 
@@ -1001,7 +1005,7 @@ static int ip6_tnl_xmit2(struct sk_buff *skb,
 	}
 
 	if (!net_eq(t->net, dev_net(dev)))
-		skb_scrub_packet(skb);
+		skb_scrub_packet(skb, true);
 
 	/*
 	 * Okay, now see if we can stuff it in the buffer as-is.

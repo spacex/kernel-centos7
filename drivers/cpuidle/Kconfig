@@ -34,6 +34,12 @@ config CPU_IDLE_CALXEDA
 	depends on ARCH_HIGHBANK
 	help
 	  Select this to enable cpuidle on Calxeda processors.
+
+menu "POWERPC CPU Idle Drivers"
+depends on PPC
+source "drivers/cpuidle/Kconfig.powerpc"
+endmenu
+
 endif
 
 config ARCH_NEEDS_CPU_IDLE_COUPLED

@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2013 QLogic Corporation
+ * Copyright (c)  2003-2014 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -1702,11 +1702,8 @@ qla83xx_beacon_blink(struct scsi_qla_host *vha)
 	if (IS_QLA2031(ha)) {
 		led_select_value = qla83xx_select_led_port(ha);
 
-		qla83xx_wr_reg(vha, led_select_value, 0x40002000);
-		qla83xx_wr_reg(vha, led_select_value + 4, 0x40002000);
-		msleep(1000);
-		qla83xx_wr_reg(vha, led_select_value, 0x40004000);
-		qla83xx_wr_reg(vha, led_select_value + 4, 0x40004000);
+		qla83xx_wr_reg(vha, led_select_value, 0x40000230);
+		qla83xx_wr_reg(vha, led_select_value + 4, 0x40000230);
 	} else if (IS_QLA8031(ha)) {
 		led_select_value = qla83xx_select_led_port(ha);
 
@@ -2944,7 +2941,7 @@ qla82xx_get_flash_version(scsi_qla_host_t *vha, void *mbuf)
 		ha->fw_revision[0] = bcode[0x4];
 		ha->fw_revision[1] = bcode[0x5];
 		ha->fw_revision[2] = bcode[0x6];
-		ql_dbg(ql_dbg_init, vha, 0x015a,
+		ql_dbg(ql_dbg_init, vha, 0x0153,
 		    "Firmware revision %d.%d.%d\n",
 		    ha->fw_revision[0], ha->fw_revision[1],
 		    ha->fw_revision[2]);

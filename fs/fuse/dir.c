@@ -187,7 +187,8 @@ static int fuse_dentry_revalidate(struct dentry *entry, unsigned int flags)
 	inode = ACCESS_ONCE(entry->d_inode);
 	if (inode && is_bad_inode(inode))
 		goto invalid;
-	else if (fuse_dentry_time(entry) < get_jiffies_64()) {
+	else if (time_before64(fuse_dentry_time(entry), get_jiffies_64()) ||
+		 (flags & LOOKUP_REVAL)) {
 		int err;
 		struct fuse_entry_out outarg;
 		struct fuse_req *req;
@@ -758,23 +759,26 @@ static int fuse_rmdir(struct inode *dir, struct dentry *entry)
 	return err;
 }
 
-static int fuse_rename(struct inode *olddir, struct dentry *oldent,
-		       struct inode *newdir, struct dentry *newent)
+static int fuse_rename_common(struct inode *olddir, struct dentry *oldent,
+			      struct inode *newdir, struct dentry *newent,
+			      unsigned int flags, int opcode, size_t argsize)
 {
 	int err;
-	struct fuse_rename_in inarg;
+	struct fuse_rename2_in inarg;
 	struct fuse_conn *fc = get_fuse_conn(olddir);
-	struct fuse_req *req = fuse_get_req_nopages(fc);
+	struct fuse_req *req;
 
+	req = fuse_get_req_nopages(fc);
 	if (IS_ERR(req))
 		return PTR_ERR(req);
 
-	memset(&inarg, 0, sizeof(inarg));
+	memset(&inarg, 0, argsize);
 	inarg.newdir = get_node_id(newdir);
-	req->in.h.opcode = FUSE_RENAME;
+	inarg.flags = flags;
+	req->in.h.opcode = opcode;
 	req->in.h.nodeid = get_node_id(olddir);
 	req->in.numargs = 3;
-	req->in.args[0].size = sizeof(inarg);
+	req->in.args[0].size = argsize;
 	req->in.args[0].value = &inarg;
 	req->in.args[1].size = oldent->d_name.len + 1;
 	req->in.args[1].value = oldent->d_name.name;
@@ -787,12 +791,16 @@ static int fuse_rename(struct inode *olddir, struct dentry *oldent,
 		/* ctime changes */
 		fuse_invalidate_attr(oldent->d_inode);
 
+		if (flags & RENAME_EXCHANGE) {
+			fuse_invalidate_attr(newent->d_inode);
+		}
+
 		fuse_invalidate_attr(olddir);
 		if (olddir != newdir)
 			fuse_invalidate_attr(newdir);
 
 		/* newent will end up negative */
-		if (newent->d_inode) {
+		if (!(flags & RENAME_EXCHANGE) && newent->d_inode) {
 			fuse_invalidate_attr(newent->d_inode);
 			fuse_invalidate_entry_cache(newent);
 		}
@@ -808,6 +816,44 @@ static int fuse_rename(struct inode *olddir, struct dentry *oldent,
 	}
 
 	return err;
+}
+
+static int fuse_rename2(struct inode *olddir, struct dentry *oldent,
+			struct inode *newdir, struct dentry *newent,
+			unsigned int flags)
+{
+	struct fuse_conn *fc = get_fuse_conn(olddir);
+	int err;
+
+	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE))
+		return -EINVAL;
+
+	if (flags) {
+		if (fc->no_rename2 || fc->minor < 23)
+			return -EINVAL;
+
+		err = fuse_rename_common(olddir, oldent, newdir, newent, flags,
+					 FUSE_RENAME2,
+					 sizeof(struct fuse_rename2_in));
+		if (err == -ENOSYS) {
+			fc->no_rename2 = 1;
+			err = -EINVAL;
+		}
+	} else {
+		err = fuse_rename_common(olddir, oldent, newdir, newent, 0,
+					 FUSE_RENAME,
+					 sizeof(struct fuse_rename_in));
+	}
+
+	return err;
+}
+
+static int fuse_rename(struct inode *olddir, struct dentry *oldent,
+		       struct inode *newdir, struct dentry *newent)
+{
+	return fuse_rename_common(olddir, oldent, newdir, newent, 0,
+				  FUSE_RENAME,
+				  sizeof(struct fuse_rename_in));
 }
 
 static int fuse_link(struct dentry *entry, struct inode *newdir,
@@ -940,7 +986,7 @@ int fuse_update_attributes(struct inode *inode, struct kstat *stat,
 	int err;
 	bool r;
 
-	if (fi->i_time < get_jiffies_64()) {
+	if (time_before64(fi->i_time, get_jiffies_64())) {
 		r = true;
 		err = fuse_do_getattr(inode, stat, file);
 	} else {
@@ -1124,7 +1170,7 @@ static int fuse_permission(struct inode *inode, int mask)
 	    ((mask & MAY_EXEC) && S_ISREG(inode->i_mode))) {
 		struct fuse_inode *fi = get_fuse_inode(inode);
 
-		if (fi->i_time < get_jiffies_64()) {
+		if (time_before64(fi->i_time, get_jiffies_64())) {
 			refreshed = true;
 
 			err = fuse_perm_getattr(inode, mask);
@@ -1681,7 +1727,7 @@ int fuse_do_setattr(struct inode *inode, struct iattr *attr,
 	 * FUSE_NOWRITE, otherwise fuse_launder_page() would deadlock.
 	 */
 	if (S_ISREG(inode->i_mode) && oldsize != outarg.attr.size) {
-		truncate_pagecache(inode, oldsize, outarg.attr.size);
+		truncate_pagecache(inode, outarg.attr.size);
 		invalidate_inode_pages2(inode->i_mapping);
 	}
 
@@ -1892,7 +1938,8 @@ static int fuse_removexattr(struct dentry *entry, const char *name)
 	return err;
 }
 
-static const struct inode_operations fuse_dir_inode_operations = {
+static const struct inode_operations_wrapper fuse_dir_inode_operations = {
+	.ops = {
 	.lookup		= fuse_lookup,
 	.mkdir		= fuse_mkdir,
 	.symlink	= fuse_symlink,
@@ -1910,6 +1957,8 @@ static const struct inode_operations fuse_dir_inode_operations = {
 	.getxattr	= fuse_getxattr,
 	.listxattr	= fuse_listxattr,
 	.removexattr	= fuse_removexattr,
+	},
+	.rename2	= fuse_rename2,
 };
 
 static const struct file_operations fuse_dir_operations = {
@@ -1952,8 +2001,9 @@ void fuse_init_common(struct inode *inode)
 
 void fuse_init_dir(struct inode *inode)
 {
-	inode->i_op = &fuse_dir_inode_operations;
+	inode->i_op = &fuse_dir_inode_operations.ops;
 	inode->i_fop = &fuse_dir_operations;
+	inode->i_flags |= S_IOPS_WRAPPER;
 }
 
 void fuse_init_symlink(struct inode *inode)
