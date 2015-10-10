@@ -16,6 +16,11 @@ struct hlist_head;
 struct fib_table;
 struct sock;
 
+struct local_ports {
+	seqlock_t	lock;
+	int		range[2];
+};
+
 struct netns_ipv4 {
 #ifdef CONFIG_SYSCTL
 	struct ctl_table_header	*forw_hdr;

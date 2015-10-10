@@ -129,6 +129,8 @@ struct net {
 	RH_KABI_EXTEND(atomic_t		fnhe_genid)
 	RH_KABI_EXTEND(int		sysctl_ip_no_pmtu_disc)
 	RH_KABI_EXTEND(int		sysctl_ip_fwd_use_pmtu)
+	/* upstream has this as part of netns_ipv4 */
+	RH_KABI_EXTEND(struct local_ports ipv4_sysctl_local_ports)
 };
 
 /*

@@ -194,14 +194,14 @@ extern int udp_lib_get_port(struct sock *sk, unsigned short snum,
 			    int (*)(const struct sock *,const struct sock *),
 			    unsigned int hash2_nulladdr);
 
-static inline __be16 udp_flow_src_port(struct net __attribute__((unused)) *net, struct sk_buff *skb,
+static inline __be16 udp_flow_src_port(struct net *net, struct sk_buff *skb,
 				       int min, int max, bool use_eth)
 {
 	u32 hash;
 
 	if (min >= max) {
 		/* Use default range */
-		inet_get_local_port_range(&min, &max);
+		inet_get_local_port_range(net, &min, &max);
 	}
 
 	hash = skb_get_hash(skb);
