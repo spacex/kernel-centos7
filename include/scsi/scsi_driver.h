@@ -4,9 +4,9 @@
 #include <linux/device.h>
 
 struct module;
+struct request;
 struct scsi_cmnd;
 struct scsi_device;
-struct request;
 
 struct scsi_driver {
 	struct module		*owner;

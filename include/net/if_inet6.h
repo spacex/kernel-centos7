@@ -206,6 +206,9 @@ struct inet6_dev {
 
 	unsigned long		tstamp; /* ipv6InterfaceTable update timestamp */
 	struct rcu_head		rcu;
+#ifndef __GENKSYMS__
+	__u8			addr_gen_mode;
+#endif
 };
 
 static inline void ipv6_eth_mc_map(const struct in6_addr *addr, char *buf)
